@@ -42,8 +42,8 @@ import math
 import struct
 import queue
 
-from .addToHomeAssistant import HassConnector
-from .dataTypes import DataTypes
+from addToHomeAssistant import HassConnector
+from dataTypes import DataTypes
 
 import pymodbus
 import asyncio
@@ -464,8 +464,10 @@ async def async_main():
     parser.add_argument('--tcp', help='Act as a Modbus TCP master, connecting to host TCP')
     parser.add_argument('--tcp-port', default='502', type=int, help='Port for MODBUS TCP. Defaults to 502')
     parser.add_argument('--set-modbus-timeout',default='1',type=float, help='Response time-out for MODBUS devices')
-    parser.add_argument('--config', required=True, help='Configuration file. Required!')
-    parser.add_argument('--verbosity', default='3', type=int, help='Verbose level, 0=silent, 1=errors only, 2=connections, 3=mb writes, 4=all')
+    parser.add_argument('--config', default=os.environ.get('CONFIG_FILE', None),
+                        help='Configuration file. Required!')
+    parser.add_argument('--verbosity', default=os.environ.get('LOG_LEVEL','3'), type=int, 
+                        help='Verbose level, 0=silent, 1=errors only, 2=connections, 3=mb writes, 4=all')
     parser.add_argument('--autoremove',action='store_true',help='Automatically remove poller if modbus communication has failed three times. Removed pollers can be reactivated by sending "True" or "1" to topic modbus/reset-autoremove')
     parser.add_argument('--add-to-homeassistant',action='store_true',help='Add devices to Home Assistant using Home Assistant\'s MQTT-Discovery')
     parser.add_argument('--always-publish',action='store_true',help='Always publish values, even if they did not change.')
@@ -694,3 +696,6 @@ async def async_main():
     master.close()
     #adder.removeAll(referenceList)
     sys.exit(1)
+
+if __name__ == '__main__':
+    main()

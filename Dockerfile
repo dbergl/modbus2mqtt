@@ -1,14 +1,22 @@
-FROM python:alpine
+FROM python:3.12-bookworm AS builder
+RUN apt-get update && apt-get install build-essential -y
+RUN pip install --upgrade pip
 
-RUN mkdir -p /app/conf/
+COPY requirements.txt .
+
+RUN pip install --user --no-cache-dir -r requirements.txt
+
+FROM python:3.12-slim-bookworm
+
+RUN adduser worker && usermod -a -G dialout worker && install -o worker -g worker -d /config /logs
+
+COPY --chown=worker:worker --from=builder /root/.local /home/worker/.local
+COPY --chown=worker:worker modbus2mqtt/ /app/
+
+VOLUME ["/config","/logs"]
+ENV PATH="/home/worker/.local/bin:${PATH}"
+
+USER worker
 WORKDIR /app
 
-# upgrade pip to avoid warnings during the docker build
-RUN pip install --root-user-action=ignore --upgrade pip
-
-RUN pip install --root-user-action=ignore --no-cache-dir pyserial pymodbus==3.7.4 paho-mqtt>=2.1.0
-
-COPY modbus2mqtt.py ./
-COPY modbus2mqtt modbus2mqtt/
-
-ENTRYPOINT [ "python", "-u", "./modbus2mqtt.py", "--config", "/app/conf/modbus2mqtt.csv" ]
+CMD [ "python3", "-u", "modbus2mqtt.py" ]
