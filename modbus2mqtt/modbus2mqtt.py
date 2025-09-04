@@ -41,6 +41,7 @@ import ssl
 import math
 import struct
 import queue
+import logging
 
 from addToHomeAssistant import HassConnector
 from dataTypes import DataTypes
@@ -68,6 +69,8 @@ deviceList = []
 referenceList = []
 control = None
 client = None
+
+#pymodbus_apply_logging_config(level=logging.CRITICAL)
 
 writeQueue = queue.SimpleQueue()
 
@@ -181,7 +184,6 @@ class Poller:
                         if verbosity >=1:
                             # THIS IS NOT A PYTHON EXCEPTION, but a valid modbus message
                             print(f"Received exception from device ({result})")
-                        client.close()
                         failed = True
                     else:
                         data = result.registers
@@ -191,7 +193,6 @@ class Poller:
                         if verbosity >=1:
                             # THIS IS NOT A PYTHON EXCEPTION, but a valid modbus message
                             print(f"Received exception from device ({result})")
-                        client.close()
                         failed = True
                     else:
                         data = result.bits
@@ -201,7 +202,6 @@ class Poller:
                         if verbosity >=1:
                             # THIS IS NOT A PYTHON EXCEPTION, but a valid modbus message
                             print(f"Received exception from device ({result})")
-                        client.close()
                         failed = True
                     else:
                         data = result.bits
@@ -211,7 +211,6 @@ class Poller:
                         if verbosity >=1:
                             # THIS IS NOT A PYTHON EXCEPTION, but a valid modbus message
                             print(f"Received exception from device ({result})")
-                        client.close()
                         failed = True
                     else:
                         data = result.registers
@@ -229,9 +228,10 @@ class Poller:
             except ModbusException as exc:
                 if verbosity>=1:
                     print(f"ERROR: exception in pymodbus {exc}")
-                client.close()
-                failed = True
-            self.failCount(failed)
+                else:
+                    failed = True
+            finally:
+                self.failCount(failed)
 
     async def checkPoll(self, client):
         if time.clock_gettime(0) >= self.next_due and not self.disabled:
@@ -625,29 +625,19 @@ async def async_main():
         print("No pollers. Exitting.")
         sys.exit(0)
 
+
+    if not client.connected:
+        if verbosity >= 1:
+            print("Connecting to MODBUS...")
+        await client.connect()
+        if client.connected:
+            if verbosity >= 1:
+                print("MODBUS connected successfully")
+
     #Main Loop
-    modbus_connected = False
     current_poller = 0
     while control.runLoop:
         time.sleep(loopBreak)
-        modbus_connected = client.connected
-        if not modbus_connected:
-            print("Connecting to MODBUS...")
-            await client.connect()
-            assert client.connected
-            modbus_connected = client.connected
-            if modbus_connected:
-                if verbosity >= 2:
-                    print("MODBUS connected successfully")
-            else:
-                for p in pollers:
-                    p.failed=True
-                    if p.failcounter<3:
-                        p.failcounter=3
-                    p.failCount(p.failed)
-                if verbosity >= 1:
-                    print("MODBUS connection error (mainLoop), trying again...")
-                time.sleep(0.5)
 
         if not mqc.initial_connection_attempted:
            try:
@@ -666,7 +656,7 @@ async def async_main():
                     print("Socket Error connecting to MQTT broker: " + args.mqtt_host + ":" + str(mqtt_port) + ", check LAN/Internet connection, trying again...")
 
         if mqc.initial_connection_made: #Don't start polling unless the initial connection to MQTT has been made, no offline MQTT storage will be available until then.
-            if modbus_connected:
+            if client.connected:
                 try:
                     if len(pollers) > 0:
                         await pollers[current_poller].checkPoll(client)
@@ -696,6 +686,11 @@ async def async_main():
                 except Exception as e:
                     if verbosity>=1:
                         print("Error: "+str(e)+" when polling or publishing, trying again...")
+            else:
+                print(f"MODBUS connection lost. Reconnecting...")
+                # Close connection before attempting to open, this prevents the failure to get exclusive lock
+                client.close()
+                await client.connect()
     client.close()
     #adder.removeAll(referenceList)
     sys.exit(1)
