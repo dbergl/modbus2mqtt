@@ -228,8 +228,7 @@ class Poller:
             except ModbusException as exc:
                 if verbosity>=1:
                     print(f"ERROR: exception in pymodbus {exc}")
-                else:
-                    failed = True
+                failed = True
             finally:
                 self.failCount(failed)
 
