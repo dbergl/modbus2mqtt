@@ -70,7 +70,8 @@ referenceList = []
 control = None
 client = None
 
-#pymodbus_apply_logging_config(level=logging.CRITICAL)
+pymodbus_apply_logging_config(level=logging.CRITICAL)
+#pymodbus_apply_logging_config(level=logging.INFO)
 
 writeQueue = queue.SimpleQueue()
 
@@ -94,6 +95,7 @@ class Device:
         self.errorCount=0
         self.pollCount=0
         self.next_due=time.clock_gettime(0)+args.diagnostics_rate
+        self.connected=None
         if verbosity>=2:
             print('Added new device \"'+self.name+'\"')
 
@@ -133,6 +135,7 @@ class Poller:
         self.disabled=False
         self.failcounter=0
         self.connected=False
+        self.lastconnectedstatus=None
 
         for myDev in deviceList:
             if myDev.name == self.topic:
@@ -152,25 +155,33 @@ class Poller:
             self.failcounter=0
             if not self.connected:
                 self.connected = True
-                mqc.publish(globaltopic + self.topic +"/connected", "True", qos=1, retain=True)
+                if self.device.connected != self.connected:
+                    self.device.connected = self.connected
+                    if verbosity >=1:
+                        print(f"Connected to device: {self.topic}")
+                    mqc.publish(globaltopic + self.topic +"/connected", "True", qos=1, retain=True)
         else:
             self.device.errorCount+=1
-            if self.failcounter==3:
+            if self.failcounter==1:
                 if args.autoremove:
                     self.disabled=True
                     if verbosity >=1:
                         print("Poller "+self.topic+" with ID "+str(self.device_id)+" disabled (functioncode: "+str(self.functioncode)+", start reference: "+str(self.reference)+", size: "+str(self.size)+").")
                     for p in pollers: #also fail all pollers with the same device id
                         if p.device_id == self.device_id:
-                            p.failcounter=3
+                            p.failcounter=1
                             p.disabled=True
                             if verbosity >=1:
                                 print("Poller "+p.topic+" with ID "+str(p.device_id)+" disabled (functioncode: "+str(p.functioncode)+", start reference: "+str(p.reference)+", size: "+str(p.size)+").")
-                self.failcounter=4
+                self.failcounter=2
                 self.connected = False
-                mqc.publish(globaltopic + self.topic +"/connected", "False", qos=1, retain=True)
+                if self.device.connected != self.connected:
+                    self.device.connected = self.connected
+                    if verbosity >=1:
+                        print(f"Could not connect to device: {self.topic}")
+                    mqc.publish(globaltopic + self.topic +"/connected", "False", qos=1, retain=True)
             else:
-                if self.failcounter<3:
+                if self.failcounter<2:
                     self.failcounter+=1
 
     async def poll(self,client):
@@ -226,7 +237,7 @@ class Poller:
                     if verbosity>=1:
                         print("Device "+str(self.device_id)+" responded with error code:"+str(result).split(',', 3)[2].rstrip(')'))
             except ModbusException as exc:
-                if verbosity>=1:
+                if verbosity>=2:
                     print(f"ERROR: exception in pymodbus {exc}")
                 failed = True
             finally:
@@ -635,6 +646,7 @@ async def async_main():
 
     #Main Loop
     current_poller = 0
+    modbuslaststatus = client.connected
     while control.runLoop:
         time.sleep(loopBreak)
 
@@ -686,7 +698,10 @@ async def async_main():
                     if verbosity>=1:
                         print("Error: "+str(e)+" when polling or publishing, trying again...")
             else:
-                print(f"MODBUS connection lost. Reconnecting...")
+                if verbosity>=1:
+                    if modbuslaststatus != client.connected:
+                        modbuslaststatus = client.connected
+                        print(f"MODBUS connection lost. Reconnecting...")
                 # Close connection before attempting to open, this prevents the failure to get exclusive lock
                 client.close()
                 await client.connect()
