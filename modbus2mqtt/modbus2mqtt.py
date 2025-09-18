@@ -141,7 +141,7 @@ class Poller:
             if myDev.name == self.topic:
                 self.device=myDev
                 break
-        if self.device == None:
+        if self.device is None:
             device = Device(self.topic,device_id)
             deviceList.append(device)
             self.device=device
@@ -357,61 +357,58 @@ async def writehandler(userdata, msg, client):
     for iterDevice in deviceList:
         if iterDevice.name == device:
             myDevice = iterDevice
-    if myDevice == None: # no such device
+    if myDevice is None: # no such device
         return
     for iterRef in myDevice.writableReferences:
         if iterRef.topic == reference:
             myRef=iterRef
-    if myRef == None: # no such reference
+    if myRef is None: # no such reference
         return
     payload = str(msg.payload.decode("utf-8"))
-    time.sleep(0.002)
-    if myRef.writefunctioncode == 5:
-        value = myRef.parse(myRef,str(payload))
-        if value != None:
-                result = await client.write_coil(int(myRef.reference),value,device_id=int(myRef.device.device_id))
-                try:
-                    if result.function_code < 0x80:
-                        myRef.checkPublish(value) # writing was successful => we can assume, that the corresponding state can be set and published
-                        if verbosity>=3:
-                            print("Writing coils values to device "+str(myDevice.name)+", ID="+str(myDevice.device_id)+" at Reference="+str(myRef.reference)+" successful.")
-                    else:
-                        if verbosity>=1:
-                            print("Writing to device "+str(myDevice.name)+", ID="+str(myDevice.device_id)+" at Reference="+str(myRef.reference)+" using function code "+str(myRef.writefunctioncode)+" FAILED! (Devices responded with errorcode"+str(result).split(',', 3)[2].rstrip(')')+". Maybe bad configuration?)")
+    time.sleep(0.005)
+    tries = 3
+    delay = 0.25
+    result = None
+    writeType = None
+    value = myRef.parse(myRef,str(payload))
 
-                except:
+    if value is not None:
+        for n in range(tries):
+            try:
+                match myRef.writefunctioncode:
+                    case 5:
+                        writeType = "coils"
+                        result = await client.write_coil(int(myRef.reference),value,device_id=int(myRef.device.device_id))
+                    case 6:
+                        try:
+                            valLen=len(value)
+                        except:
+                            valLen=1
+                        if valLen>1 or args.avoid_fc6:
+                            writeType = "registers"
+                            result = await client.write_registers(int(myRef.reference),value,device_id=int(myRef.device.device_id))
+                        else:
+                            writeType = "register"
+                            result = await client.write_register(int(myRef.reference),value,device_id=int(myRef.device.device_id))
+
+                if result.isError():
                     if verbosity>=1:
-                        print("Error writing to device device "+str(myDevice.device_id)+" (maybe CRC error or timeout)")
-        else:
-            if verbosity >= 1:
-                print("Writing to device "+str(myDevice.name)+", ID="+str(myDevice.device_id)+" at Reference="+str(myRef.reference)+" using function code "+str(myRef.writefunctioncode)+" not possible. Given value is not \"True\" or \"False\".")
-
-
-    if myRef.writefunctioncode == 6:
-        value = myRef.parse(myRef,str(payload))
-        if value is not None:
-            try:
-                valLen=len(value)
-            except:
-                valLen=1
-            if valLen>1 or args.avoid_fc6:
-                result = await client.write_registers(int(myRef.reference),value,device_id=myRef.device.device_id)
-            else:
-                result = await client.write_register(int(myRef.reference),value,device_id=myRef.device.device_id)
-            try:
-                if result.function_code < 0x80:
+                        # THIS IS NOT A PYTHON EXCEPTION, but a valid modbus message
+                        print(f"Writing '{value}' to device {str(myDevice.name)}, ID={str(myDevice.device_id)} at Reference={str(myRef.reference)} ({myRef.topic}) using function code {str(myRef.writefunctioncode)} FAILED! (Devices responded with errorcode{str(result).split(',', 3)[2].rstrip(')')}. ({result})")
+                        print(f"Retrying. attempt #{n+1}")
+                    time.sleep(delay)
+                    delay *= 1.5
+                else:
                     myRef.checkPublish(value) # writing was successful => we can assume, that the corresponding state can be set and published
                     if verbosity>=3:
-                        print("Writing register value(s) to device "+str(myDevice.name)+", ID="+str(myDevice.device_id)+" at Reference="+str(myRef.reference)+" using function code "+str(myRef.writefunctioncode)+" successful.")
-                else:
-                    if verbosity>=1:
-                        print("Writing to device "+str(myDevice.name)+", ID="+str(myDevice.device_id)+" at Reference="+str(myRef.reference)+" using function code "+str(myRef.writefunctioncode)+" FAILED! (Devices responded with errorcode"+str(result).split(',', 3)[2].rstrip(')')+". Maybe bad configuration?)")
-            except:
+                        print(f"Writing {writeType} values to device {str(myDevice.name)}, ID={str(myDevice.device_id)} at Reference={str(myRef.reference)} successful.")
+                    return
+            except ModbusException as exc:
                 if verbosity >= 1:
-                    print("Error writing to device "+str(myDevice.device_id)+" (maybe CRC error or timeout)")
-        else:
-            if verbosity >= 1:
-                print("Writing to device "+str(myDevice.name)+", ID="+str(myDevice.device_id)+" at Reference="+str(myRef.reference)+" using function code "+str(myRef.writefunctioncode)+" not possible. Value does not fulfill criteria.")
+                    print(f"Error writing to device {str(myDevice.device_id)}: {exc}")
+    else:
+        if verbosity >= 1:
+            print(f"Writing to device {str(myDevice.name)}, ID={str(myDevice.device_id)} at Reference={str(myRef.reference)} using function code {str(myRef.writefunctioncode)} not possible. Given value is not valid.")
 
 def messagehandler(mqc,userdata,msg):
     writeQueue.put((userdata, msg))
