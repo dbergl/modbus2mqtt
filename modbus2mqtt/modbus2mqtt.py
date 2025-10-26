@@ -436,6 +436,29 @@ def loghandler(mgc, userdata, level, buf):
     if verbosity >= 4:
         print("MQTT LOG:" + buf)
 
+def striptxfromrx(sending: bool, data: bytes) -> bytes:
+    """Strips first 8 bytes from received messages
+       This is a workaround/HACK for an RS-485 device that
+       seems to have Rx active while Transmitting so that
+       all messages are returned with the Tx message too
+    """
+
+
+    if verbosity >= 4:
+        print("=" * 80)
+        print(f"striptxfromrx-packet" * 5)
+        if sending:
+            txt = "REQUEST stream"
+            print(f"---> {txt}: {data!r}")
+        else:
+            txt = "RESPONSE stream"
+            print(f"---> {txt}: {data[8:]!r}")
+
+    if sending:
+        return data
+    else:
+        return data[8:]
+
 async def async_main():
     global parser
     global args
@@ -483,6 +506,7 @@ async def async_main():
     parser.add_argument('--set-loop-break',default=None,type=float, help='Set pause in main polling loop. Defaults to 10ms.')
     parser.add_argument('--diagnostics-rate',default='0',type=int, help='Time in seconds after which for each device diagnostics are published via mqtt. Set to sth. like 600 (= every 10 minutes) or so.')
     parser.add_argument('--avoid-fc6',action='store_true', help='If set, use function code 16 (write multiple registers) even when just writing a single register')
+    parser.add_argument('--strip-tx-from-rx',default=os.environ.get('STRIP_TX_FROM_RX', None), action='store_true', help='If set request message will be stripped from the response message. Fix for RS485 hat bad behavior')
     control = Control()
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
@@ -573,7 +597,10 @@ async def async_main():
                 parity = "O"
         if args.rtu_parity == "even":
                 parity = "E"
-        client = ModbusClient.AsyncModbusSerialClient(args.rtu,framer=FramerType.RTU, stopbits = 1, bytesize = 8, parity = parity, baudrate = int(args.rtu_baud), timeout=args.set_modbus_timeout)
+        if args.strip_tx_from_rx:
+            client = ModbusClient.AsyncModbusSerialClient(args.rtu,framer=FramerType.RTU, stopbits = 1, bytesize = 8, parity = parity, baudrate = int(args.rtu_baud), timeout=args.set_modbus_timeout, trace_packet=striptxfromrx)
+        else:
+            client = ModbusClient.AsyncModbusSerialClient(args.rtu,framer=FramerType.RTU, stopbits = 1, bytesize = 8, parity = parity, baudrate = int(args.rtu_baud), timeout=args.set_modbus_timeout)
 
     elif args.tcp:
         client = ModbusClient.AsyncModbusTcpClient(args.tcp, port=args.tcp_port,framer=framer, client_id="modbus2mqtt", clean_session=False)
