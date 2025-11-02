@@ -2,6 +2,12 @@ FROM python:3.13-slim-bookworm AS builder
 RUN apt-get update && apt-get install build-essential -y
 RUN pip install --upgrade pip
 
+COPY pymodbus/ pymodbus/
+WORKDIR pymodbus
+
+RUN pip install --user --no-cache-dir .[development]
+RUN python3 -m build
+
 COPY requirements.txt .
 
 RUN pip install --user --no-cache-dir -r requirements.txt

@@ -600,7 +600,8 @@ async def async_main():
         if args.strip_tx_from_rx:
             client = ModbusClient.AsyncModbusSerialClient(args.rtu,framer=FramerType.RTU, stopbits = 1, bytesize = 8, parity = parity, baudrate = int(args.rtu_baud), timeout=args.set_modbus_timeout, trace_packet=striptxfromrx)
         else:
-            client = ModbusClient.AsyncModbusSerialClient(args.rtu,framer=FramerType.RTU, stopbits = 1, bytesize = 8, parity = parity, baudrate = int(args.rtu_baud), timeout=args.set_modbus_timeout)
+            rs485_settings = serial.rs485.RS485Settings(rts_level_for_tx=False, rts_level_for_rx=True)
+            client = ModbusClient.AsyncModbusSerialClient(args.rtu,framer=FramerType.RTU, stopbits = 1, bytesize = 8, parity = parity, baudrate = int(args.rtu_baud), timeout=args.set_modbus_timeout, rs485_settings=)
 
     elif args.tcp:
         client = ModbusClient.AsyncModbusTcpClient(args.tcp, port=args.tcp_port,framer=framer, client_id="modbus2mqtt", clean_session=False)
