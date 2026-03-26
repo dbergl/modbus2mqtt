@@ -32,6 +32,7 @@ import socket
 import paho.mqtt.client as mqtt
 import serial
 import io
+import json
 import os
 import sys
 import csv
@@ -62,6 +63,7 @@ parser = None
 args = None
 verbosity = None
 addToHass = None
+adder = None
 loopBreak = None
 globaltopic = None
 pollers = []
@@ -94,19 +96,19 @@ class Device:
         self.device_id=device_id
         self.errorCount=0
         self.pollCount=0
-        self.next_due=time.clock_gettime(0)+args.diagnostics_rate
+        self.next_due=time.monotonic()+args.diagnostics_rate
         self.connected=None
         if verbosity>=2:
             print('Added new device \"'+self.name+'\"')
 
     def publishDiagnostics(self):
         if args.diagnostics_rate>0:
-            if self.next_due<time.clock_gettime(0):
-                self.next_due=time.clock_gettime(0)+args.diagnostics_rate
+            if self.next_due<time.monotonic():
+                self.next_due=time.monotonic()+args.diagnostics_rate
                 error=0
                 try:
                     error=(self.errorCount / self.pollCount)*100
-                except:
+                except Exception:
                     error=0
                 if self.pollCount==0:
                     error=100
@@ -114,7 +116,7 @@ class Device:
                     try:
                         mqc.publish(globaltopic + self.name +"/state/diagnostics_errors_percent", str(error), qos=1, retain=True)
                         mqc.publish(globaltopic + self.name +"/state/diagnostics_errors_total", str(self.errorCount), qos=1, retain=True)
-                    except:
+                    except Exception:
                         pass
                 self.pollCount=0
                 self.errorCount=0
@@ -128,7 +130,7 @@ class Poller:
         self.dataType=dataType
         self.reference=int(reference)
         self.size=int(size)
-        self.next_due=time.clock_gettime(0)+self.rate*random.uniform(0,1)
+        self.next_due=time.monotonic()+self.rate*random.uniform(0,1)
         self.last = None
         self.readableReferences=[]
         self.device=None
@@ -159,7 +161,7 @@ class Poller:
                     self.device.connected = self.connected
                     if verbosity >=1:
                         print(f"Connected to device: {self.topic}")
-                    mqc.publish(globaltopic + self.topic +"/connected", "True", qos=1, retain=True)
+                    mqc.publish(globaltopic + self.topic +"/connected", "online", qos=1, retain=True)
         else:
             self.device.errorCount+=1
             if self.failcounter==1:
@@ -179,7 +181,7 @@ class Poller:
                     self.device.connected = self.connected
                     if verbosity >=1:
                         print(f"Could not connect to device: {self.topic}")
-                    mqc.publish(globaltopic + self.topic +"/connected", "False", qos=1, retain=True)
+                    mqc.publish(globaltopic + self.topic +"/connected", "offline", qos=1, retain=True)
             else:
                 if self.failcounter<2:
                     self.failcounter+=1
@@ -187,8 +189,9 @@ class Poller:
     async def poll(self,client):
             result = None
             failed = False
+            data = []
             try:
-                time.sleep(0.002)
+                await asyncio.sleep(0.002)
                 if self.functioncode == 3:
                     result = await client.read_holding_registers(self.reference, count=self.size, device_id=self.device_id)
                     if result.isError():
@@ -198,7 +201,7 @@ class Poller:
                         failed = True
                     else:
                         data = result.registers
-                if self.functioncode == 1:
+                elif self.functioncode == 1:
                     result = await client.read_coils(self.reference, self.size, device_id=self.device_id)
                     if result.isError():
                         if verbosity >=1:
@@ -207,7 +210,7 @@ class Poller:
                         failed = True
                     else:
                         data = result.bits
-                if self.functioncode == 2:
+                elif self.functioncode == 2:
                     result = await client.read_discrete_inputs(self.reference, self.size, device_id=self.device_id)
                     if result.isError():
                         if verbosity >=1:
@@ -216,7 +219,7 @@ class Poller:
                         failed = True
                     else:
                         data = result.bits
-                if self.functioncode == 4:
+                elif self.functioncode == 4:
                     result = await client.read_input_registers(self.reference, self.size, device_id=self.device_id)
                     if result.isError():
                         if verbosity >=1:
@@ -225,6 +228,10 @@ class Poller:
                         failed = True
                     else:
                         data = result.registers
+                else:
+                    if verbosity >= 1:
+                        print(f"Unknown function code {self.functioncode} for poller {self.topic}")
+                    failed = True
 
                 if not failed:
                     if verbosity>=4:
@@ -244,9 +251,9 @@ class Poller:
                 self.failCount(failed)
 
     async def checkPoll(self, client):
-        if time.clock_gettime(0) >= self.next_due and not self.disabled:
+        if time.monotonic() >= self.next_due and not self.disabled:
             await self.poll(client)
-            self.next_due=time.clock_gettime(0)+self.rate
+            self.next_due=time.monotonic()+self.rate
 
     def addReference(self,myRef):
         #check reference configuration and maybe add to this poller or to the list of writable things
@@ -283,13 +290,14 @@ class Poller:
             print("Reference topic ("+str(myRef.topic)+") is already occupied for poller \""+self.topic+"\", therefore ignoring it.")
 
 class Reference:
-    def __init__(self,topic,reference,dtype,rw,poller,scaling):
+    def __init__(self,topic,reference,dtype,rw,poller,scaling,hajson):
         self.topic=topic
         self.reference=int(reference)
         self.lastval=None
         self.scale=None
         self.regAmount=None
         self.stringLength=None
+        self.json={}
 
         if scaling:
             try:
@@ -297,6 +305,11 @@ class Reference:
             except ValueError as e:
               if verbosity>=1:
                 print("Scaling Error:", e)
+        if hajson:
+            try:
+                self.json=json.loads(hajson)
+            except ValueError as e:
+                print("json Error:", e)
         self.rw=rw
         self.relativeReference=None
         self.writefunctioncode=None
@@ -328,11 +341,17 @@ class Reference:
                     publish_result = mqc.publish(globaltopic+self.device.name+"/state/"+self.topic,val,retain=True)
                     if verbosity>=4:
                         print("published MQTT topic: " + str(self.device.name+"/state/"+self.topic)+" value: " + str(self.lastval)+" RC:"+str(publish_result.rc))
-                except:
+                except Exception:
                     if verbosity>=1:
                         print("Error publishing MQTT topic: " + str(self.device.name+"/state/"+self.topic)+"value: " + str(self.lastval))
 
 async def writehandler(userdata, msg, client):
+    if str(msg.topic) == "homeassistant/status":
+        if str(msg.payload.decode("utf-8")) == "online" and addToHass and adder:
+            if verbosity >= 1:
+                print("Home Assistant online — republishing discovery configs")
+            adder.addAll(referenceList)
+        return
     if str(msg.topic) == globaltopic+"reset-autoremove":
         if not args.autoremove and verbosity>=1:
             print("ERROR: Received autoremove-reset command but autoremove is not enabled. Check flags.")
@@ -365,7 +384,7 @@ async def writehandler(userdata, msg, client):
     if myRef is None: # no such reference
         return
     payload = str(msg.payload.decode("utf-8"))
-    time.sleep(0.005)
+    await asyncio.sleep(0.005)
     tries = 3
     delay = 0.25
     result = None
@@ -382,7 +401,7 @@ async def writehandler(userdata, msg, client):
                     case 6:
                         try:
                             valLen=len(value)
-                        except:
+                        except Exception:
                             valLen=1
                         if valLen>1 or args.avoid_fc6:
                             writeType = "registers"
@@ -422,7 +441,10 @@ def connecthandler(mqc, userdata, flags, reason_code, properties):
         mqc.subscribe(globaltopic + "reset-autoremove")
         if verbosity>=2:
             print("Subscribed to MQTT topic: "+globaltopic + "+/set/+")
-        mqc.publish(globaltopic + "connected", "True", qos=1, retain=True)
+        mqc.publish(globaltopic + "connected", "online", qos=1, retain=True)
+        if addToHass and adder:
+            mqc.subscribe("homeassistant/status")
+            adder.addAll(referenceList)
     else:
         if verbosity>=1:
             print(f"MQTT Failed to connect: {reason_code}")
@@ -492,7 +514,6 @@ async def async_main():
     loopBreak=args.set_loop_break
     if loopBreak is None:
         loopBreak=0.01
-    addToHass=False
     addToHass=args.add_to_homeassistant
 
     globaltopic=args.mqtt_topic
@@ -560,7 +581,7 @@ async def async_main():
                 continue
             elif row["type"]=="reference" or row["type"]=="ref":
                 if currentPoller is not None:
-                    currentPoller.addReference(Reference(row["topic"],row["col2"],row["col4"],row["col3"],currentPoller,row["col5"]))
+                    currentPoller.addReference(Reference(row["topic"],row["col2"],row["col4"],row["col3"],currentPoller,row["col5"],row["col6"]))
                 else:
                     print("No poller for reference "+row["topic"]+".")
 
@@ -576,7 +597,7 @@ async def async_main():
         client = ModbusClient.AsyncModbusSerialClient(args.rtu,framer=FramerType.RTU, stopbits = 1, bytesize = 8, parity = parity, baudrate = int(args.rtu_baud), timeout=args.set_modbus_timeout)
 
     elif args.tcp:
-        client = ModbusClient.AsyncModbusTcpClient(args.tcp, port=args.tcp_port,framer=framer, client_id="modbus2mqtt", clean_session=False)
+        client = ModbusClient.AsyncModbusTcpClient(args.tcp, port=args.tcp_port, framer=FramerType.SOCKET)
     else:
         print("You must specify a modbus access method, either --rtu or --tcp")
         sys.exit(1)
@@ -591,14 +612,14 @@ async def async_main():
         else:
             mqtt_port = 1883
 
-    clientid=globaltopic + "-" + str(time.time())
+    clientid=globaltopic.rstrip("/").replace("/","_") + "_" + str(int(time.time()))
     global mqc
     mqc=mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=clientid)
     mqc.on_connect=connecthandler
     mqc.on_message=messagehandler
     mqc.on_disconnect=disconnecthandler
     mqc.on_log= loghandler
-    mqc.will_set(globaltopic+"connected","False",qos=2,retain=True)
+    mqc.will_set(globaltopic+"connected","offline",qos=2,retain=True)
     mqc.initial_connection_attempted = False
     mqc.initial_connection_made = False
     if args.mqtt_user or args.mqtt_pass:
@@ -632,6 +653,9 @@ async def async_main():
         print("No pollers. Exitting.")
         sys.exit(0)
 
+    global adder
+    if addToHass:
+        adder = HassConnector(mqc, globaltopic, verbosity>=1)
 
     if not client.connected:
         if verbosity >= 1:
@@ -653,13 +677,9 @@ async def async_main():
                 mqc.connect(args.mqtt_host, mqtt_port, 60)
                 mqc.initial_connection_attempted = True #Once we have connected the mqc loop will take care of reconnections.
                 mqc.loop_start()
-                #Setup HomeAssistant
-                if(addToHass):
-                    adder=HassConnector(mqc,globaltopic,verbosity>=1)
-                    adder.addAll(referenceList)
                 if verbosity >= 1:
                     print("MQTT Loop started")
-           except:
+           except Exception:
                 if verbosity>=1:
                     print("Socket Error connecting to MQTT broker: " + args.mqtt_host + ":" + str(mqtt_port) + ", check LAN/Internet connection, trying again...")
 
@@ -703,8 +723,10 @@ async def async_main():
                 client.close()
                 await client.connect()
     client.close()
-    #adder.removeAll(referenceList)
-    sys.exit(1)
+    mqc.loop_stop()
+    if addToHass and adder:
+        adder.removeAll()
+    sys.exit(0)
 
 if __name__ == '__main__':
     asyncio.run(
