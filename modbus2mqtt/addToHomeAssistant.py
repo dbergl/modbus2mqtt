@@ -1,4 +1,5 @@
 import json
+from dataTypes import DataTypes
 
 
 class HassConnector:
@@ -39,17 +40,9 @@ class HassConnector:
             'mf': 'modbus'
         }
 
-        # Both conditions must be True for an entity to be available:
-        #   1. The Modbus device is reachable (per-device poll status)
-        #   2. The bridge itself is running (bridge-level will covers crash/exit)
         avty = [
             {
                 't': f'{self.globaltopic}{device.name}/connected',
-                'pl_avail': 'online',
-                'pl_not_avail': 'offline'
-            },
-            {
-                't': f'{self.globaltopic}connected',
                 'pl_avail': 'online',
                 'pl_not_avail': 'offline'
             }
@@ -72,7 +65,6 @@ class HassConnector:
             'o': origin,
             'dev': dev,
             'avty': avty,
-            'avty_mode': 'all',
             'cmps': cmps
         }
 
@@ -90,8 +82,9 @@ class HassConnector:
         if 'ha_platform' in ref.json:
             return ref.json['ha_platform']
 
-        # Auto-detect from dataType and rw flags
-        is_bool = (ref.poller.dataType == 'bool')
+        # Check the reference's actual combine function, not the poller's default
+        # dataType. This correctly handles bool-typed holding registers as well as coils.
+        is_bool = (ref.combine == DataTypes.combinebool)
         is_writable = 'w' in ref.rw
 
         if is_bool:
@@ -100,6 +93,8 @@ class HassConnector:
             return 'number' if is_writable else 'sensor'
 
     def _buildComponent(self, ref, platform):
+        if not getattr(ref, 'publish', True):
+            return None
         # Start with user-provided fields; strip our custom key
         component = {k: v for k, v in ref.json.items() if k != 'ha_platform'}
 

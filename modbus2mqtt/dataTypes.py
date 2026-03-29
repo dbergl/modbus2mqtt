@@ -170,6 +170,56 @@ class DataTypes:
             out+=str(x)+" "
         return out
 
+    def parsePackedTime(refobj,msg):
+        # Accepts "YYYY-MM-DD HH:MM:SS" or ISO 8601 "YYYY-MM-DDTHH:MM:SS[+HH:MM]"
+        from datetime import datetime
+        for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+            try:
+                dt = datetime.strptime(msg.strip(), fmt)
+                reg0 = ((dt.year % 100) << 8) | dt.month
+                reg1 = (dt.day << 8) | dt.hour
+                reg2 = (dt.minute << 8) | dt.second
+                return [reg0, reg1, reg2]
+            except ValueError:
+                continue
+        return None
+    def combinePackedTime(refobj,val):
+        year   = (val[0] >> 8) & 0xFF
+        month  =  val[0] & 0xFF
+        day    = (val[1] >> 8) & 0xFF
+        hour   =  val[1] & 0xFF
+        minute = (val[2] >> 8) & 0xFF
+        second =  val[2] & 0xFF
+        return f"20{year:02d}-{month:02d}-{day:02d}T{hour:02d}:{minute:02d}:{second:02d}+00:00"
+
+    def parsehiByte(refobj,msg):
+        try:
+            value=int(msg)
+            if value > 255 or value < 0:
+                return None
+            return value << 8
+        except Exception:
+            return None
+    def combinehiByte(refobj,val):
+        try:
+            return (val[0] >> 8) & 0xFF
+        except Exception:
+            return (val >> 8) & 0xFF
+
+    def parseloByte(refobj,msg):
+        try:
+            value=int(msg)
+            if value > 255 or value < 0:
+                return None
+            return value & 0xFF
+        except Exception:
+            return None
+    def combineloByte(refobj,val):
+        try:
+            return val[0] & 0xFF
+        except Exception:
+            return val & 0xFF
+
     def parseDataType(refobj,conf):
         if conf is None or conf == "uint16" or conf == "":
             refobj.regAmount=1
@@ -233,3 +283,15 @@ class DataTypes:
            refobj.regAmount=2
            refobj.parse=DataTypes.parsefloat32BE
            refobj.combine=DataTypes.combinefloat32BE
+        elif conf == "packedtime":
+            refobj.regAmount=3
+            refobj.parse=DataTypes.parsePackedTime
+            refobj.combine=DataTypes.combinePackedTime
+        elif conf == "hibyte":
+            refobj.regAmount=1
+            refobj.parse=DataTypes.parsehiByte
+            refobj.combine=DataTypes.combinehiByte
+        elif conf == "lobyte":
+            refobj.regAmount=1
+            refobj.parse=DataTypes.parseloByte
+            refobj.combine=DataTypes.combineloByte

@@ -98,6 +98,8 @@ class Device:
         self.pollCount=0
         self.next_due=time.monotonic()+args.diagnostics_rate
         self.connected=None
+        self.mqc=None
+        self._mqtt_started=False
         if verbosity>=2:
             print('Added new device \"'+self.name+'\"')
 
@@ -161,7 +163,7 @@ class Poller:
                     self.device.connected = self.connected
                     if verbosity >=1:
                         print(f"Connected to device: {self.topic}")
-                    mqc.publish(globaltopic + self.topic +"/connected", "online", qos=1, retain=True)
+                    self.device.mqc.publish(globaltopic + self.topic +"/connected", "online", qos=1, retain=True)
         else:
             self.device.errorCount+=1
             if self.failcounter==1:
@@ -181,7 +183,7 @@ class Poller:
                     self.device.connected = self.connected
                     if verbosity >=1:
                         print(f"Could not connect to device: {self.topic}")
-                    mqc.publish(globaltopic + self.topic +"/connected", "offline", qos=1, retain=True)
+                    self.device.mqc.publish(globaltopic + self.topic +"/connected", "offline", qos=1, retain=True)
             else:
                 if self.failcounter<2:
                     self.failcounter+=1
@@ -310,6 +312,7 @@ class Reference:
                 self.json=json.loads(hajson)
             except ValueError as e:
                 print("json Error:", e)
+        self.publish = self.json.pop('publish', True)
         self.rw=rw
         self.relativeReference=None
         self.writefunctioncode=None
@@ -329,6 +332,8 @@ class Reference:
             return True
 
     def checkPublish(self,val):
+        if not self.publish:
+            return
         # Only publish messages after the initial connection has been made. If it became disconnected then the offline buffer will store messages,
         # but only after the intial connection was made.
         if mqc.initial_connection_made == True:
@@ -368,7 +373,11 @@ async def writehandler(userdata, msg, client):
                             print("Reactivated poller "+p.topic+" with ID "+str(p.device_id)+ " and functioncode "+str(p.functioncode)+".")
 
         return
-    (prefix,device,function,reference) = msg.topic.split("/")
+    parts = msg.topic.split("/")
+    if len(parts) < 4:
+        return
+    (prefix,device,function) = parts[:3]
+    reference = "/".join(parts[3:])
     if function != 'set':
         return
     myRef = None
@@ -415,7 +424,7 @@ async def writehandler(userdata, msg, client):
                         # THIS IS NOT A PYTHON EXCEPTION, but a valid modbus message
                         print(f"Writing '{value}' to device {str(myDevice.name)}, ID={str(myDevice.device_id)} at Reference={str(myRef.reference)} ({myRef.topic}) using function code {str(myRef.writefunctioncode)} FAILED! (Devices responded with errorcode{str(result).split(',', 3)[2].rstrip(')')}. ({result})")
                         print(f"Retrying. attempt #{n+1}")
-                    time.sleep(delay)
+                    await asyncio.sleep(delay)
                     delay *= 1.5
                 else:
                     myRef.checkPublish(value) # writing was successful => we can assume, that the corresponding state can be set and published
@@ -437,11 +446,22 @@ def connecthandler(mqc, userdata, flags, reason_code, properties):
         mqc.initial_connection_made = True
         if verbosity>=2:
             print("MQTT Broker connected succesfully: " + args.mqtt_host + ":" + str(mqtt_port))
-        mqc.subscribe(globaltopic + "+/set/+")
+        mqc.subscribe(globaltopic + "+/set/#")
         mqc.subscribe(globaltopic + "reset-autoremove")
         if verbosity>=2:
-            print("Subscribed to MQTT topic: "+globaltopic + "+/set/+")
+            print("Subscribed to MQTT topic: "+globaltopic + "+/set/#")
         mqc.publish(globaltopic + "connected", "online", qos=1, retain=True)
+        # Start per-device MQTT clients (each carries its own LWT).
+        # First connect only — paho's loop handles subsequent reconnections automatically.
+        for device in deviceList:
+            if device.mqc is not None and not device._mqtt_started:
+                try:
+                    device.mqc.connect(args.mqtt_host, mqtt_port, 60)
+                    device.mqc.loop_start()
+                    device._mqtt_started = True
+                except Exception as e:
+                    if verbosity >= 1:
+                        print(f"Failed to start MQTT client for device {device.name}: {e}")
         if addToHass and adder:
             mqc.subscribe("homeassistant/status")
             adder.addAll(referenceList)
@@ -612,6 +632,27 @@ async def async_main():
         else:
             mqtt_port = 1883
 
+    def apply_mqtt_security(client):
+        if args.mqtt_user or args.mqtt_pass:
+            client.username_pw_set(args.mqtt_user, args.mqtt_pass)
+        if args.mqtt_use_tls:
+            if args.mqtt_tls_version == "tlsv1.2":
+                tls_version = ssl.PROTOCOL_TLSv1_2
+            elif args.mqtt_tls_version == "tlsv1.1":
+                tls_version = ssl.PROTOCOL_TLSv1_1
+            elif args.mqtt_tls_version == "tlsv1":
+                tls_version = ssl.PROTOCOL_TLSv1
+            elif args.mqtt_tls_version is None:
+                tls_version = None
+            else:
+                if verbosity >= 2:
+                    print("Unknown TLS version - ignoring")
+                tls_version = None
+            cert_reqs = ssl.CERT_NONE if args.mqtt_insecure else ssl.CERT_REQUIRED
+            client.tls_set(ca_certs=args.mqtt_cacerts, certfile=None, keyfile=None, cert_reqs=cert_reqs, tls_version=tls_version)
+            if args.mqtt_insecure:
+                client.tls_insecure_set(True)
+
     clientid=globaltopic.rstrip("/").replace("/","_") + "_" + str(int(time.time()))
     global mqc
     mqc=mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=clientid)
@@ -622,32 +663,7 @@ async def async_main():
     mqc.will_set(globaltopic+"connected","offline",qos=2,retain=True)
     mqc.initial_connection_attempted = False
     mqc.initial_connection_made = False
-    if args.mqtt_user or args.mqtt_pass:
-        mqc.username_pw_set(args.mqtt_user, args.mqtt_pass)
-
-    if args.mqtt_use_tls:
-        if args.mqtt_tls_version == "tlsv1.2":
-            tls_version = ssl.PROTOCOL_TLSv1_2
-        elif args.mqtt_tls_version == "tlsv1.1":
-            tls_version = ssl.PROTOCOL_TLSv1_1
-        elif args.mqtt_tls_version == "tlsv1":
-            tls_version = ssl.PROTOCOL_TLSv1
-        elif args.mqtt_tls_version is None:
-            tls_version = None
-        else:
-            if verbosity >= 2:
-                print("Unknown TLS version - ignoring")
-            tls_version = None
-
-        if args.mqtt_insecure:
-            cert_regs = ssl.CERT_NONE
-        else:
-            cert_regs = ssl.CERT_REQUIRED
-
-        mqc.tls_set(ca_certs=args.mqtt_cacerts, certfile= None, keyfile=None, cert_reqs=cert_regs, tls_version=tls_version)
-
-        if args.mqtt_insecure:
-            mqc.tls_insecure_set(True)
+    apply_mqtt_security(mqc)
 
     if len(pollers)<1:
         print("No pollers. Exitting.")
@@ -656,6 +672,26 @@ async def async_main():
     global adder
     if addToHass:
         adder = HassConnector(mqc, globaltopic, verbosity>=1)
+
+    # Create a dedicated MQTT client per device, each with its own LWT.
+    # On crash the broker fires the LWT immediately; on reconnect the device
+    # client's on_connect publishes "offline" again before polling resumes.
+    for device in deviceList:
+        dev_clientid = globaltopic.rstrip("/").replace("/","_") + "_" + device.name + "_" + str(int(time.time()))
+        dev_mqc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=dev_clientid)
+        dev_mqc.will_set(globaltopic + device.name + "/connected", "offline", qos=1, retain=True)
+        apply_mqtt_security(dev_mqc)
+        def _make_on_connect(name, dev):
+            def _on_connect(c, userdata, flags, reason_code, properties):
+                if reason_code == "Success":
+                    # Republish current Modbus state so HA reflects reality after MQTT reconnect.
+                    # On first connect device.connected is None (falsy) so we start offline;
+                    # failCount() will publish online after the first successful Modbus poll.
+                    state = "online" if dev.connected else "offline"
+                    c.publish(globaltopic + name + "/connected", state, qos=1, retain=True)
+            return _on_connect
+        dev_mqc.on_connect = _make_on_connect(device.name, device)
+        device.mqc = dev_mqc
 
     if not client.connected:
         if verbosity >= 1:
@@ -723,9 +759,16 @@ async def async_main():
                 client.close()
                 await client.connect()
     client.close()
-    mqc.loop_stop()
+    for device in deviceList:
+        if device.mqc:
+            device.mqc.publish(globaltopic + device.name + "/connected", "offline", qos=1, retain=True)
+            device.mqc.loop_stop()
+            device.mqc.disconnect()
+    mqc.publish(globaltopic + "connected", "offline", qos=1, retain=True)
     if addToHass and adder:
         adder.removeAll()
+    mqc.loop_stop()
+    mqc.disconnect()
     sys.exit(0)
 
 if __name__ == '__main__':
