@@ -111,13 +111,19 @@ class HassConnector:
 
         # Platform-specific payload defaults
         if platform == 'switch':
-            component.setdefault('stat_on', 'True')
-            component.setdefault('stat_off', 'False')
-            component.setdefault('pl_on', 'True')
-            component.setdefault('pl_off', 'False')
+            if 'state_on' not in component:
+                component.setdefault('stat_on', 'True')
+            if 'state_off' not in component:
+                component.setdefault('stat_off', 'False')
+            if 'payload_on' not in component:
+                component.setdefault('pl_on', 'True')
+            if 'payload_off' not in component:
+                component.setdefault('pl_off', 'False')
         elif platform == 'binary_sensor':
-            component.setdefault('pl_on', 'True')
-            component.setdefault('pl_off', 'False')
+            if 'payload_on' not in component:
+                component.setdefault('pl_on', 'True')
+            if 'payload_off' not in component:
+                component.setdefault('pl_off', 'False')
 
         device_uid = self._makeUniqueId(ref.device.name, ref.device.device_id)
         component['uniq_id'] = f'{device_uid}_{ref.topic.replace("/", "_")}'
