@@ -79,3 +79,59 @@ ref,counter2,1,rw,uint16
 #treat the contents of register 1 as unsigned int. (note that counter1 overlaps counter2. This is possible and may be useful)
 ref,somestring,3,rw,string6
 #registers 3, 4 and 5 as a 6 character string
+
+# hibyte / lobyte: extract the high or low byte from a single 16-bit register.
+# Useful when a device packs two 8-bit values into one register.
+# Two refs can point at the same register address with different types.
+poll,device,1,100,1,holding_register,5
+ref,value_high,100,r,hibyte
+#publishes bits 15-8 of register 100 (0-255)
+ref,value_low,100,r,lobyte
+#publishes bits 7-0 of register 100 (0-255)
+
+# packedtime: reads three consecutive registers, each packing two 8-bit time
+# components, and publishes a single ISO 8601 datetime string suitable for
+# HA's mqtt.datetime platform. Register layout: [year|month], [day|hour],
+# [minute|second]. Writing accepts the same format and encodes back to the
+# three registers.
+#
+# Add an optional "timezone" (IANA name) to declare the zone the device
+# clock represents. When set, the published state is naive ISO and HA is
+# told (via the discovery `timezone` field) to interpret it in that zone;
+# writes from HA are converted into the same zone before encoding.
+# Without it, the host's local offset is attached on publish — make sure
+# the container's TZ env var matches the device's wall-clock zone.
+poll,device,1,200,3,holding_register,10
+ref,system_time/datetime,200,rw,packedtime,,"{""ha_platform"": ""datetime"", ""name"": ""System Time"", ""timezone"": ""America/Los_Angeles""}"
+#publishes e.g. "2025-03-26T14:30:00"; individual fields can also be read
+ref,system_time/year,200,rw,hibyte
+ref,system_time/month,200,rw,lobyte
+ref,system_time/day,201,rw,hibyte
+ref,system_time/hour,201,rw,lobyte
+ref,system_time/minute,202,rw,hibyte
+ref,system_time/second,202,rw,lobyte
+
+# col6 HA discovery JSON examples:
+# sensor with unit
+poll,inverter,1,4000,1,holding_register,5
+ref,AC_Input_Voltage,4000,r,,,"{""name"": ""AC Input Voltage"", ""device_class"": ""voltage"", ""unit_of_measurement"": ""V""}"
+
+# sensor with value scaled by /10
+poll,inverter,1,4328,1,holding_register,5
+ref,charging_current,4328,r,,,"{""name"": ""Charging Current"", ""device_class"": ""current"", ""unit_of_measurement"": ""A"", ""suggested_display_precision"": 1, ""value_template"": ""{{ value | float / 10 }}""}"
+
+# writable number with round-trip scaling (/10 for display, *10 on write)
+poll,inverter,1,4426,1,holding_register,5
+ref,chargevolts,4426,rw,,,"{""ha_platform"": ""number"", ""device_class"": ""voltage"", ""unit_of_measurement"": ""V"", ""val_tpl"": ""{{ value | float / 10 }}"", ""cmd_tpl"": ""{{ (value | float * 10) | int }}"", ""min"": 46.0, ""max"": 58.4, ""step"": 0.1, ""name"": ""Charge Voltage""}"
+
+# switch using a holding register (not a coil)
+poll,inverter,1,57088,1,holding_register,5
+ref,onoff,57088,rw,,,"{""ha_platform"": ""switch"", ""name"": ""Inverter Power"", ""stat_on"": ""1"", ""stat_off"": ""0"", ""payload_on"": ""1"", ""payload_off"": ""0""}"
+
+# write-only button
+poll,inverter,1,4417,1,holding_register,0
+ref,reset,4417,w,,,"{""ha_platform"": ""button"", ""name"": ""Inverter Reset"", ""payload_press"": ""1""}"
+
+# suppress publishing (value is polled but never sent to MQTT or HA)
+poll,inverter,1,4108,1,holding_register,0
+ref,password,4108,rw,,,"{""ha_platform"": ""number"", ""name"": ""Inverter Password"", ""min"": 0, ""max"": 255, ""step"": 1, ""publish"": false}"
