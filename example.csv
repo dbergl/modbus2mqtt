@@ -90,12 +90,20 @@ ref,value_low,100,r,lobyte
 #publishes bits 7-0 of register 100 (0-255)
 
 # packedtime: reads three consecutive registers, each packing two 8-bit time
-# components, and publishes a single "YYYY-MM-DD HH:MM:SS" string.
-# Register layout: [year|month], [day|hour], [minute|second]
-# Writing accepts the same format and encodes back to the three registers.
+# components, and publishes a single ISO 8601 datetime string suitable for
+# HA's mqtt.datetime platform. Register layout: [year|month], [day|hour],
+# [minute|second]. Writing accepts the same format and encodes back to the
+# three registers.
+#
+# Add an optional "timezone" (IANA name) to declare the zone the device
+# clock represents. When set, the published state is naive ISO and HA is
+# told (via the discovery `timezone` field) to interpret it in that zone;
+# writes from HA are converted into the same zone before encoding.
+# Without it, the host's local offset is attached on publish — make sure
+# the container's TZ env var matches the device's wall-clock zone.
 poll,device,1,200,3,holding_register,10
-ref,system_time/datetime,200,rw,packedtime,,"{""ha_platform"": ""text"", ""name"": ""System Time""}"
-#publishes e.g. "2025-03-26 14:30:00"; individual fields can also be read
+ref,system_time/datetime,200,rw,packedtime,,"{""ha_platform"": ""datetime"", ""name"": ""System Time"", ""timezone"": ""America/Los_Angeles""}"
+#publishes e.g. "2025-03-26T14:30:00"; individual fields can also be read
 ref,system_time/year,200,rw,hibyte
 ref,system_time/month,200,rw,lobyte
 ref,system_time/day,201,rw,hibyte

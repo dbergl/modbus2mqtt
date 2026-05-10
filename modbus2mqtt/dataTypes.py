@@ -1,5 +1,7 @@
 import math
 import struct
+from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 class DataTypes:
     def parsebool(refobj,payload):
@@ -170,19 +172,37 @@ class DataTypes:
             out+=str(x)+" "
         return out
 
+    def _refTargetZone(refobj):
+        # Resolve an optional IANA timezone configured on the reference's HA
+        # JSON (e.g. {"timezone": "America/Los_Angeles"}). Returns a ZoneInfo
+        # or None. Unknown zone names are treated as not configured.
+        j = getattr(refobj, 'json', None) or {}
+        name = j.get('timezone')
+        if not name:
+            return None
+        try:
+            return ZoneInfo(name)
+        except ZoneInfoNotFoundError:
+            return None
+
     def parsePackedTime(refobj,msg):
-        # Accepts "YYYY-MM-DD HH:MM:SS" or ISO 8601 "YYYY-MM-DDTHH:MM:SS[+HH:MM]"
-        from datetime import datetime
-        for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
-            try:
-                dt = datetime.strptime(msg.strip(), fmt)
-                reg0 = ((dt.year % 100) << 8) | dt.month
-                reg1 = (dt.day << 8) | dt.hour
-                reg2 = (dt.minute << 8) | dt.second
-                return [reg0, reg1, reg2]
-            except ValueError:
-                continue
-        return None
+        # Accepts ISO 8601 "YYYY-MM-DDTHH:MM:SS[.fff][±HH:MM|Z]" and the
+        # legacy "YYYY-MM-DD HH:MM:SS" form. The device clock is wall-clock
+        # local; an aware input is converted to the configured zone (or
+        # the host's local zone) before stripping tzinfo.
+        s = msg.strip().replace('Z', '+00:00').replace(' ', 'T')
+        try:
+            dt = datetime.fromisoformat(s)
+        except ValueError:
+            return None
+        if dt.tzinfo is not None:
+            target = DataTypes._refTargetZone(refobj)
+            dt = dt.astimezone(target) if target else dt.astimezone()
+            dt = dt.replace(tzinfo=None)
+        reg0 = ((dt.year % 100) << 8) | dt.month
+        reg1 = (dt.day << 8) | dt.hour
+        reg2 = (dt.minute << 8) | dt.second
+        return [reg0, reg1, reg2]
     def combinePackedTime(refobj,val):
         year   = (val[0] >> 8) & 0xFF
         month  =  val[0] & 0xFF
@@ -190,7 +210,16 @@ class DataTypes:
         hour   =  val[1] & 0xFF
         minute = (val[2] >> 8) & 0xFF
         second =  val[2] & 0xFF
-        return f"20{year:02d}-{month:02d}-{day:02d}T{hour:02d}:{minute:02d}:{second:02d}+00:00"
+        try:
+            dt = datetime(2000 + year, month, day, hour, minute, second)
+        except ValueError:
+            return None
+        if DataTypes._refTargetZone(refobj) is not None:
+            # Naive ISO; HA's discovery `timezone` field interprets it.
+            return dt.isoformat(timespec='seconds')
+        # No tz configured — attach the host's local offset so HA gets
+        # a fully-qualified timestamp.
+        return dt.astimezone().isoformat(timespec='seconds')
 
     def parsehiByte(refobj,msg):
         try:

@@ -43,6 +43,7 @@ import math
 import struct
 import queue
 import logging
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from addToHomeAssistant import HassConnector
 from dataTypes import DataTypes
@@ -350,6 +351,45 @@ class Reference:
                     if verbosity>=1:
                         print("Error publishing MQTT topic: " + str(self.device.name+"/state/"+self.topic)+"value: " + str(self.lastval))
 
+def _handle_tz_set(ref, name):
+    """In-memory IANA timezone override for a packedtime ref. Validates the
+    name, mutates ref.json['timezone'] (read by parsePackedTime/combinePackedTime
+    via _refTargetZone), republishes discovery so HA picks up the new
+    `timezone` discovery field, and resyncs the companion state. Lost on
+    container restart — pair with an HA automation to set the inverter
+    clock when this changes."""
+    name = (name or '').strip()
+    if name:
+        try:
+            ZoneInfo(name)
+        except ZoneInfoNotFoundError:
+            if verbosity >= 1:
+                print(f"Unknown timezone {name!r} for {ref.topic}; ignoring")
+            # Snap the HA text entity back to the current value.
+            tz_state_topic = f'{globaltopic}{ref.device.name}/state/{ref.topic}/timezone'
+            mqc.publish(tz_state_topic, ref.json.get('timezone', ''), qos=1, retain=True)
+            return
+        ref.json['timezone'] = name
+    else:
+        ref.json.pop('timezone', None)
+
+    if verbosity >= 1:
+        print(f"Updated timezone for {ref.device.name}/{ref.topic} -> {ref.json.get('timezone', '(none)')}")
+
+    # Force the next checkPublish to emit a fresh datetime in the new zone.
+    ref.lastval = None
+
+    # Republish device discovery (the `timezone` field flows through ref.json)
+    # and the companion text state.
+    if addToHass and adder:
+        adder.addAll(referenceList)
+    else:
+        # Discovery isn't enabled, but still keep the state topic in sync
+        # in case something else is subscribed.
+        tz_state_topic = f'{globaltopic}{ref.device.name}/state/{ref.topic}/timezone'
+        mqc.publish(tz_state_topic, ref.json.get('timezone', ''), qos=1, retain=True)
+
+
 async def writehandler(userdata, msg, client):
     if str(msg.topic) == "homeassistant/status":
         if str(msg.payload.decode("utf-8")) == "online" and addToHass and adder:
@@ -387,6 +427,20 @@ async def writehandler(userdata, msg, client):
             myDevice = iterDevice
     if myDevice is None: # no such device
         return
+
+    # Companion text entity: "<ref>/timezone" updates the in-memory IANA
+    # zone override on the parent packedtime ref instead of writing modbus.
+    if reference.endswith('/timezone'):
+        parent_topic = reference[:-len('/timezone')]
+        parent_ref = next(
+            (r for r in referenceList
+             if r.device is myDevice and r.topic == parent_topic),
+            None)
+        if parent_ref is None or parent_ref.combine != DataTypes.combinePackedTime:
+            return
+        _handle_tz_set(parent_ref, str(msg.payload.decode("utf-8")))
+        return
+
     for iterRef in myDevice.writableReferences:
         if iterRef.topic == reference:
             myRef=iterRef

@@ -56,6 +56,18 @@ class HassConnector:
                 key = ref.topic.replace('/', '_')
                 cmps[key] = component
 
+            # Companion `text` entity for editing the IANA timezone of a
+            # packedtime datetime from HA. Emitted whenever the ref uses
+            # the packedtime data type, regardless of whether a timezone
+            # is currently configured — this lets the user *set* one
+            # from a fresh state.
+            if ref.combine == DataTypes.combinePackedTime and platform == 'datetime':
+                tz_component = self._buildTzCompanion(ref)
+                cmps[f'{ref.topic.replace("/", "_")}_timezone'] = tz_component
+                # Seed the companion state so HA renders the current value.
+                tz_state_topic = f'{self.globaltopic}{ref.device.name}/state/{ref.topic}/timezone'
+                self.mqc.publish(tz_state_topic, ref.json.get('timezone', ''), qos=1, retain=True)
+
         if not cmps:
             if self.verbosity:
                 print(f"No components for device {device.name}, skipping discovery")
@@ -129,6 +141,17 @@ class HassConnector:
         component['uniq_id'] = f'{device_uid}_{ref.topic.replace("/", "_")}'
 
         return component
+
+    def _buildTzCompanion(self, ref):
+        device_uid = self._makeUniqueId(ref.device.name, ref.device.device_id)
+        parent_name = ref.json.get('name') or ref.topic.replace('_', ' ').replace('/', ' ')
+        return {
+            'p': 'text',
+            'name': f'{parent_name} Timezone',
+            'stat_t': f'{self.globaltopic}{ref.device.name}/state/{ref.topic}/timezone',
+            'cmd_t': f'{self.globaltopic}{ref.device.name}/set/{ref.topic}/timezone',
+            'uniq_id': f'{device_uid}_{ref.topic.replace("/", "_")}_timezone',
+        }
 
     def removeAll(self):
         """Remove all HA discovery configs by publishing empty payloads to discovery topics."""
