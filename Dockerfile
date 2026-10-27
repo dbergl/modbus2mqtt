@@ -1,8 +1,7 @@
 FROM python:3.14-slim AS builder
 
 # No compiler toolchain here on purpose: every runtime dependency (paho-mqtt,
-# pymodbus, pyserial) ships a pure-Python py3-none-any wheel, so nothing is
-# built from source.
+# tmodbus, serialx) ships a prebuilt wheel, so nothing is built from source.
 
 COPY --from=ghcr.io/astral-sh/uv:0.9.7 /uv /bin/uv
 

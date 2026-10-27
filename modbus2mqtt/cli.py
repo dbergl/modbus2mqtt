@@ -36,7 +36,7 @@ def build_parser():
     parser.add_argument('--mqtt-tls-version', default=None,
                         help='TLS protocol version, can be one of tlsv1.2 tlsv1.1 or tlsv1')
     parser.add_argument('--rtu', default=os.environ.get('RTU', None),
-                        help='pyserial URL (or port name) for RTU serial port')
+                        help='Serial port path for RTU (e.g. /dev/ttyUSB0)')
     parser.add_argument('--rtu-baud', default=os.environ.get('RTU_BAUD', '9600'), type=int,
                         help='Baud rate for serial port. Defaults to 9600')
     parser.add_argument('--rtu-parity', default='none', choices=['even','odd','none'],

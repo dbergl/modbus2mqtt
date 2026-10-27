@@ -19,6 +19,14 @@ an MQTT message broker is used as the centralized message bus.
 
 Changelog
 ---------
+- version 2.0.0, 27. of October 2026: **breaking:** `--rtu` is now a serial port path only (pyserial URLs such as `socket://` are no longer supported)
+    - tmodbus (with serialx for RTU) replaces pymodbus
+    - packaged with uv; Docker image built with uv
+    - added a pytest test suite
+    - fix: float32 values with scaling now publish
+    - fix: coil, discrete input and input register polling and `--avoid-fc6` writes (broken under pymodbus 3.11)
+    - fix: a write arriving during a Modbus link outage is no longer dropped
+    - logging now uses standard levels: `LOG_LEVEL` 0 = critical only, 1 = warnings/errors, 2-3 = info, 4 = debug
 - version 0.80, 30. of August 2025   : update to pymodbus 3.11.1, use CallbackAPIVersion.VERSION2 for paho_mqtt, close connections on error
 - version 0.72, 12. of November 2023: add loop break option again due to user request, reconnect on modbus tcp connection loss and serial device not found
 - version 0.68, 31. of October 2023: use asyncio with pymodbus, add option to use function code 16 when writing single registers, remove loop break option
@@ -39,46 +47,25 @@ Main improvements over modbus2mqtt by Oliver Wagner:
 - multiple slave devices on one bus are now fully supported
 - polling speed has been increased significantly. With modbus RTU @ 38400 baud
   more than 80 transactions per second have been achieved.
-- switched over to pymodbus which is in active development.
+- built on tmodbus, an actively developed asyncio Modbus library.
 - Improved error handling, the software will continuously retry when the network or device goes down.
 
 Feel free to contribute!
 
 
-Installation
-------------
-run `sudo pip3 install modbus2mqtt`
+Installation and usage
+----------------------
+Requirements: python 3.12+ and [uv](https://docs.astral.sh/uv/).
 
-Without installation
---------------------
-Requirements:
+From a checkout of this repo:
 
-* python3
-* Eclipse Paho for Python - http://www.eclipse.org/paho/clients/python/
-* pymodbus - https://github.com/riptideio/pymodbus
-
-Installation of requirements:
-
-* Install python3 and python3-pip and python3-serial (on a Debian based system something like sudo apt install python3 python3-pip python3-serial will likely get you there)
-* run pip3 install pymodbus
-* run pip3 install paho-mqtt
-
-Usage
------
-If you've installed using pip:
-
-* example for rtu and mqtt broker on localhost: `modbus2mqtt --rtu /dev/ttyS0 --rtu-baud 38400 --rtu-parity none --mqtt-host localhost  --config testing.csv`
+* `uv sync`
+* example for rtu and mqtt broker on localhost: `uv run modbus2mqtt --rtu /dev/ttyS0 --rtu-baud 38400 --rtu-parity none --mqtt-host localhost --config testing.csv`
 * example for tcp slave and mqtt broker
-    on localhost: `modbus2mqtt --tcp localhost --config testing.csv`
-    remotely: `modbus2mqtt --tcp 192.168.1.7 --config example.csv --mqtt-host mqtt.eclipseprojects.io`
+    on localhost: `uv run modbus2mqtt --tcp localhost --config testing.csv`
+    remotely: `uv run modbus2mqtt --tcp 192.168.1.7 --config example.csv --mqtt-host mqtt.eclipseprojects.io`
 
-
-If you haven't installed modbus2mqtt you can run modbus2mqtt.py from the root directory of this repo directly:
-
-* example for rtu and mqtt broker on localhost: `python3 modbus2mqtt.py --rtu /dev/ttyS0 --rtu-baud 38400 --rtu-parity none --mqtt-host localhost  --config testing.csv`
-* example for tcp slave and mqtt broker
-    on localhost: `python3 modbus2mqtt.py --tcp localhost --config testing.csv`
-    remotely:     `python3 modbus2mqtt.py --tcp 192.168.1.7 --config example.csv --mqtt-host mqtt.eclipseprojects.io`
+`--rtu` takes a serial port path such as `/dev/ttyS0`. pyserial URLs (`socket://`, `rfc2217://`, ...) are no longer supported.
 
 For docker support see below.
      
@@ -317,6 +304,8 @@ ref,system_time/datetime,4402,rw,packedtime,,"{""ha_platform"": ""text"", ""name
 Docker
 ------
 
-spicierModbus2mqtt can be run as a docker container, using the included Dockerfile. It allows all usual configuration options, with the expectation that it's configuration is at `/app/conf/modbus2mqtt.csv`. For example:
+spicierModbus2mqtt can be run as a docker container, using the included Dockerfile. It allows all usual configuration options, with the configuration mounted under `/config`. For example:
 
-`docker build -t modbus2mqtt . && docker run -v $(pwd)/example.csv:/app/conf/modbus2mqtt.csv modbus2mqtt --tcp <modbus-tcp-host> --mqtt-host <mqtt-host>`
+`docker build -t modbus2mqtt . && docker run -v $(pwd)/example.csv:/config/modbus2mqtt.csv modbus2mqtt python3 -u modbus2mqtt.py --config /config/modbus2mqtt.csv --tcp <modbus-tcp-host> --mqtt-host <mqtt-host>`
+
+The image installs the package into a virtualenv and ships a `/app/modbus2mqtt.py` shim, so the long-standing `python3 -u modbus2mqtt.py --add-to-homeassistant ...` invocation (as used by coach2mqtt) keeps working. The default `CMD` is `python3 -u modbus2mqtt.py`; to pass options, give the full command, e.g. `docker run ... modbus2mqtt python3 -u modbus2mqtt.py --tcp <host>`, or use the `modbus2mqtt` console script, which is on the PATH.
