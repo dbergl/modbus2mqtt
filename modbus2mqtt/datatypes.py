@@ -3,11 +3,14 @@
 Naming quirk kept from the original code: for 32-bit types "LE" means the HIGH word comes first,
 "BE" swaps the words (low word first).
 """
+import logging
 import struct
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -122,7 +125,7 @@ def _sized_type(conf, prefix, field, default, cap, builder):
     except ValueError:
         length = default
     if length > cap:
-        print(f"Data type {prefix.rstrip('-')}: length too long")
+        log.warning("Data type %s: length too long", prefix.rstrip("-"))
         length = cap
     return builder(length)
 
@@ -130,7 +133,7 @@ def _sized_type(conf, prefix, field, default, cap, builder):
 def _string_type(length):
     if length % 2:
         length -= 1
-        print("Data type string: length must be divisible by 2")
+        log.warning("Data type string: length must be divisible by 2")
 
     def parse(payload, ref):
         if len(payload) > length:

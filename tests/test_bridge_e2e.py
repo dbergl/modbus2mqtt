@@ -8,6 +8,7 @@ class, the Modbus TCP socket and SIGTERM.
 import asyncio
 import json
 import os
+import signal
 from pathlib import Path
 
 import pytest
@@ -283,3 +284,28 @@ async def test_write_publishes_state_immediately(tmp_path, monkeypatch, device):
         await wait_for(lambda: broker.payloads(state("i16")))
         broker.inject("modbus/dev/set/i16", "-5")
         await wait_for(lambda: broker.last(state("i16")).payload == b"-5", timeout=1.0)
+
+
+async def test_sigterm_during_reconnect_exits_promptly(tmp_path, monkeypatch, device):
+    loop = asyncio.get_running_loop()
+    async with running_bridge(tmp_path, monkeypatch, BASIC_CSV, device) as broker:
+        await wait_online(broker)
+        await device.stop()
+        await asyncio.sleep(0.2)   # a poll is now blocked in tmodbus's reconnect backoff
+        started = loop.time()
+        signal.raise_signal(signal.SIGTERM)
+        await wait_for(lambda: broker.last("modbus/connected").payload == b"offline", timeout=3)
+    assert loop.time() - started < 3
+    assert broker.last("modbus/connected").payload == b"offline"
+
+
+async def test_write_racing_link_loss_not_lost(tmp_path, monkeypatch, device):
+    async with running_bridge(tmp_path, monkeypatch, BASIC_CSV, device) as broker:
+        await wait_online(broker)
+        mark = len(broker.published)
+        await device.stop()
+        broker.inject("modbus/dev/set/i16", "7")
+        await asyncio.sleep(0.5)
+        await device.start()
+        await wait_for(lambda: (1, 6, 1, 7) in device.writes)
+        assert b"offline" not in published_after(broker, mark, "modbus/dev/connected")

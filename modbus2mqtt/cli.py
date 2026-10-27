@@ -1,6 +1,18 @@
 import argparse
 import asyncio
+import contextlib
+import logging
 import os
+import signal
+import sys
+
+from . import __version__
+from .bridge import Bridge
+from .config import load_config
+from .modbus import create_link
+from .mqtt import MqttSide
+
+log = logging.getLogger(__name__)
 
 
 def build_parser():
@@ -45,10 +57,52 @@ def build_parser():
     return parser
 
 
+def configure_logging(verbosity: int) -> int:
+    """Map --verbosity / LOG_LEVEL onto the root log level and return it."""
+    if verbosity <= 0:
+        level = logging.CRITICAL
+    elif verbosity == 1:
+        level = logging.WARNING
+    elif verbosity <= 3:
+        level = logging.INFO
+    else:
+        level = logging.DEBUG
+    logging.basicConfig(stream=sys.stdout, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.getLogger().setLevel(level)
+    logging.getLogger("tmodbus").setLevel(logging.NOTSET if verbosity >= 4 else max(level, logging.WARNING))
+    return level
+
+
 async def run(argv=None):
     args = build_parser().parse_args(argv)
-    from .modbus2mqtt import async_main
-    await async_main(args)
+    configure_logging(args.verbosity)
+    prefix = args.mqtt_topic if args.mqtt_topic.endswith("/") else args.mqtt_topic + "/"
+    log.info("Starting modbus2mqtt %s with topic prefix %r", __version__, prefix)
+    config = load_config(args.config)
+    link = create_link(args)
+    if not config.pollers:
+        log.error("No pollers. Exiting.")
+        return
+    mqtt = MqttSide(args, prefix, config.devices)
+    stop = asyncio.Event()
+    task = asyncio.create_task(Bridge(args, config, link, mqtt).run(stop))
+
+    def on_signal():
+        log.info("Exiting")
+        stop.set()
+        task.cancel()  # interrupts a request blocked in tmodbus's reconnect backoff
+
+    loop = asyncio.get_running_loop()
+    async with contextlib.AsyncExitStack() as cleanup:  # runs LIFO, each step even if an earlier one fails
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, on_signal)
+            cleanup.callback(loop.remove_signal_handler, sig)
+        cleanup.push_async_callback(link.close)
+        cleanup.callback(mqtt.stop)
+        cleanup.callback(task.cancel)
+        await asyncio.wait({task})
+        if not task.cancelled():
+            task.result()
 
 
 def main(argv=None):

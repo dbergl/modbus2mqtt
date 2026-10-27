@@ -1,17 +1,21 @@
+"""Home Assistant MQTT device discovery for the configured references."""
 import json
+import logging
+
+from . import __version__
+
+log = logging.getLogger(__name__)
 
 
 class HassConnector:
-    def __init__(self, mqc, globaltopic, verbosity):
-        self.mqc = mqc
+    def __init__(self, mqc, globaltopic):
+        self.mqc = mqc  # anything with publish(topic, payload, qos, retain)
         self.globaltopic = globaltopic
-        self.verbosity = verbosity
         self.referenceList = []
 
-    def addAll(self, referenceList):
+    def add_all(self, referenceList):
         self.referenceList = referenceList
-        if self.verbosity:
-            print("Publishing Home Assistant MQTT discovery configs")
+        log.info("Publishing Home Assistant MQTT discovery configs")
 
         # Group references by device
         devices = {}
@@ -29,7 +33,7 @@ class HassConnector:
 
         origin = {
             'name': 'modbus2mqtt',
-            'sw': '0.80',
+            'sw': __version__,
             'url': 'https://github.com/dbergl/modbus2mqtt/'
         }
 
@@ -68,8 +72,7 @@ class HassConnector:
                 self.mqc.publish(tz_state_topic, ref.json.get('timezone', ''), qos=1, retain=True)
 
         if not cmps:
-            if self.verbosity:
-                print(f"No components for device {device.name}, skipping discovery")
+            log.info("No components for device %s, skipping discovery", device.name)
             return
 
         payload = {
@@ -80,8 +83,7 @@ class HassConnector:
         }
 
         topic = f'homeassistant/device/{device_uid}/config'
-        if self.verbosity:
-            print(f"Publishing HA discovery for device {device.name} to {topic}")
+        log.info("Publishing HA discovery for device %s to %s", device.name, topic)
         self.mqc.publish(topic, json.dumps(payload), qos=1, retain=False)
 
     def _makeUniqueId(self, device_name, device_id):
@@ -152,7 +154,7 @@ class HassConnector:
             'uniq_id': f'{device_uid}_{ref.topic.replace("/", "_")}_timezone',
         }
 
-    def removeAll(self):
+    def remove_all(self):
         """Remove all HA discovery configs by publishing empty payloads to discovery topics."""
         seen = set()
         for ref in self.referenceList:
@@ -160,6 +162,5 @@ class HassConnector:
             if device_uid not in seen:
                 seen.add(device_uid)
                 topic = f'homeassistant/device/{device_uid}/config'
-                if self.verbosity:
-                    print(f"Removing HA discovery for device {ref.device.name}")
+                log.info("Removing HA discovery for device %s", ref.device.name)
                 self.mqc.publish(topic, '', qos=1, retain=False)

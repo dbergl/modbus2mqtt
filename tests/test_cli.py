@@ -1,8 +1,9 @@
+import logging
 import subprocess
 import sys
 from pathlib import Path
 
-from modbus2mqtt.cli import build_parser
+from modbus2mqtt.cli import build_parser, configure_logging
 
 
 def test_parser_env_defaults(monkeypatch):
@@ -33,3 +34,19 @@ def test_docker_shim_help_runs(tmp_path):
     shim.write_text(Path("docker/modbus2mqtt.py").read_text())
     r = subprocess.run([sys.executable, "-u", "modbus2mqtt.py", "--help"], cwd=tmp_path, capture_output=True, text=True)
     assert r.returncode == 0 and "--rtu" in r.stdout
+
+
+def test_verbosity_mapping():
+    root, tmodbus_log = logging.getLogger(), logging.getLogger("tmodbus")
+    saved = root.level, tmodbus_log.level
+    expected = {-1: logging.CRITICAL, 0: logging.CRITICAL, 1: logging.WARNING, 2: logging.INFO,
+                3: logging.INFO, 4: logging.DEBUG, 5: logging.DEBUG}
+    try:
+        assert {n: configure_logging(n) for n in expected} == expected
+        configure_logging(1)
+        assert tmodbus_log.getEffectiveLevel() == logging.WARNING
+        configure_logging(4)
+        assert tmodbus_log.getEffectiveLevel() == logging.DEBUG
+    finally:
+        root.setLevel(saved[0])
+        tmodbus_log.setLevel(saved[1])

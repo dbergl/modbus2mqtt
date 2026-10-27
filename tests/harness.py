@@ -1,7 +1,6 @@
 """Run the real bridge against a fake Modbus device and a fake MQTT broker."""
 
 import asyncio
-import queue
 import signal
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -29,15 +28,6 @@ reference,inp,0,r,,,
 """
 
 
-def _reset_legacy_globals() -> None:
-    """The legacy bridge keeps its state in module globals; start each run clean."""
-    from modbus2mqtt import modbus2mqtt as legacy
-
-    legacy.config = None
-    legacy.writeQueue = queue.SimpleQueue()
-    legacy.adder = None
-
-
 async def wait_for(predicate: Callable[[], bool], timeout: float = 5.0) -> None:
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
@@ -63,7 +53,6 @@ async def running_bridge(tmp_path, monkeypatch, csv_text: str, device: FakeModbu
     broker = FakeBroker()
     monkeypatch.setattr(paho.mqtt.client, "Client", broker.client_factory)
     saved_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
-    _reset_legacy_globals()
     argv = ["--tcp", "127.0.0.1", "--tcp-port", str(device.port), "--config", str(config),
             "--mqtt-host", "fake", "--verbosity", "4", *extra_args]
     task = asyncio.create_task(_run_bridge(argv))

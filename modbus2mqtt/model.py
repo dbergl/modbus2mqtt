@@ -16,8 +16,6 @@ class Device:
     poll_count: int = 0
     connected: bool | None = None
     next_due: float = 0.0  # next diagnostics publication (monotonic seconds)
-    mqc: object = None  # per-device MQTT client (legacy bridge; moves out in Task 7)
-    mqtt_started: bool = False
 
 
 @dataclass(eq=False)
