@@ -25,7 +25,7 @@ class HassConnector:
             self._publishDevice(data['device'], data['refs'])
 
     def _publishDevice(self, device, refs):
-        device_uid = self._makeUniqueId(device.name, device.device_id)
+        device_uid = self._makeUniqueId(device.name, device.unit_id)
 
         origin = {
             'name': 'modbus2mqtt',
@@ -136,13 +136,13 @@ class HassConnector:
             if 'payload_off' not in component:
                 component.setdefault('pl_off', 'False')
 
-        device_uid = self._makeUniqueId(ref.device.name, ref.device.device_id)
+        device_uid = self._makeUniqueId(ref.device.name, ref.device.unit_id)
         component['uniq_id'] = f'{device_uid}_{ref.topic.replace("/", "_")}'
 
         return component
 
     def _buildTzCompanion(self, ref):
-        device_uid = self._makeUniqueId(ref.device.name, ref.device.device_id)
+        device_uid = self._makeUniqueId(ref.device.name, ref.device.unit_id)
         parent_name = ref.json.get('name') or ref.topic.replace('_', ' ').replace('/', ' ')
         return {
             'p': 'text',
@@ -156,7 +156,7 @@ class HassConnector:
         """Remove all HA discovery configs by publishing empty payloads to discovery topics."""
         seen = set()
         for ref in self.referenceList:
-            device_uid = self._makeUniqueId(ref.device.name, ref.device.device_id)
+            device_uid = self._makeUniqueId(ref.device.name, ref.device.unit_id)
             if device_uid not in seen:
                 seen.add(device_uid)
                 topic = f'homeassistant/device/{device_uid}/config'

@@ -34,9 +34,7 @@ import io
 import json
 import os
 import sys
-import csv
 import signal
-import random
 import ssl
 import math
 import struct
@@ -45,7 +43,7 @@ import logging
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .addToHomeAssistant import HassConnector
-from .datatypes import parse_data_type
+from .config import load_config
 
 import asyncio
 
@@ -65,9 +63,7 @@ addToHass = None
 adder = None
 loopBreak = None
 globaltopic = None
-pollers = []
-deviceList = []
-referenceList = []
+config = None
 control = None
 client = None
 
@@ -87,262 +83,149 @@ def signal_handler(signal, frame):
         print('Exiting ' + sys.argv[0])
         control.stopLoop()
 
-class Device:
-    def __init__(self,name,device_id):
-        self.name=name
-        self.occupiedTopics=[]
-        self.writableReferences=[]
-        self.device_id=device_id
-        self.errorCount=0
-        self.pollCount=0
-        self.next_due=time.monotonic()+args.diagnostics_rate
-        self.connected=None
-        self.mqc=None
-        self._mqtt_started=False
-        if verbosity>=2:
-            print('Added new device \"'+self.name+'\"')
-
-    def publishDiagnostics(self):
-        if args.diagnostics_rate>0:
-            if self.next_due<time.monotonic():
-                self.next_due=time.monotonic()+args.diagnostics_rate
+def publish_diagnostics(device):
+    if args.diagnostics_rate>0:
+        if device.next_due<time.monotonic():
+            device.next_due=time.monotonic()+args.diagnostics_rate
+            error=0
+            try:
+                error=(device.error_count / device.poll_count)*100
+            except Exception:
                 error=0
+            if device.poll_count==0:
+                error=100
+            if mqc.initial_connection_made == True:
                 try:
-                    error=(self.errorCount / self.pollCount)*100
+                    mqc.publish(globaltopic + device.name +"/state/diagnostics_errors_percent", str(error), qos=1, retain=True)
+                    mqc.publish(globaltopic + device.name +"/state/diagnostics_errors_total", str(device.error_count), qos=1, retain=True)
                 except Exception:
-                    error=0
-                if self.pollCount==0:
-                    error=100
-                if mqc.initial_connection_made == True:
-                    try:
-                        mqc.publish(globaltopic + self.name +"/state/diagnostics_errors_percent", str(error), qos=1, retain=True)
-                        mqc.publish(globaltopic + self.name +"/state/diagnostics_errors_total", str(self.errorCount), qos=1, retain=True)
-                    except Exception:
-                        pass
-                self.pollCount=0
-                self.errorCount=0
+                    pass
+            device.poll_count=0
+            device.error_count=0
 
-class Poller:
-    def __init__(self,topic,rate,device_id,functioncode,reference,size,dataType):
-        self.topic=topic
-        self.rate=float(rate)
-        self.device_id=int(device_id)
-        self.functioncode=int(functioncode)
-        self.dataType=dataType
-        self.reference=int(reference)
-        self.size=int(size)
-        self.next_due=time.monotonic()+self.rate*random.uniform(0,1)
-        self.last = None
-        self.readableReferences=[]
-        self.device=None
-        self.disabled=False
-        self.failcounter=0
-        self.connected=False
-        self.lastconnectedstatus=None
-
-        for myDev in deviceList:
-            if myDev.name == self.topic:
-                self.device=myDev
-                break
-        if self.device is None:
-            device = Device(self.topic,device_id)
-            deviceList.append(device)
-            self.device=device
-        if verbosity>=2:
-            print("Added new poller "+str(self.topic)+","+str(self.functioncode)+","+str(self.dataType)+","+str(self.reference)+","+str(self.size)+",")
-
-
-    def failCount(self,failed):
-        self.device.pollCount+=1
-        if not failed:
-            self.failcounter=0
-            if not self.connected:
-                self.connected = True
-                if self.device.connected != self.connected:
-                    self.device.connected = self.connected
-                    if verbosity >=1:
-                        print(f"Connected to device: {self.topic}")
-                    self.device.mqc.publish(globaltopic + self.topic +"/connected", "online", qos=1, retain=True)
+def fail_count(poller, failed):
+    device = poller.device
+    device.poll_count+=1
+    if not failed:
+        poller.failcounter=0
+        if not poller.connected:
+            poller.connected = True
+            if device.connected != poller.connected:
+                device.connected = poller.connected
+                if verbosity >=1:
+                    print(f"Connected to device: {poller.topic}")
+                device.mqc.publish(globaltopic + poller.topic +"/connected", "online", qos=1, retain=True)
+    else:
+        device.error_count+=1
+        if poller.failcounter==1:
+            if args.autoremove:
+                poller.disabled=True
+                if verbosity >=1:
+                    print("Poller "+poller.topic+" with ID "+str(poller.unit_id)+" disabled (functioncode: "+str(poller.fc)+", start reference: "+str(poller.address)+", size: "+str(poller.size)+").")
+                for p in config.pollers: #also fail all pollers with the same device id
+                    if p.unit_id == poller.unit_id:
+                        p.failcounter=1
+                        p.disabled=True
+                        if verbosity >=1:
+                            print("Poller "+p.topic+" with ID "+str(p.unit_id)+" disabled (functioncode: "+str(p.fc)+", start reference: "+str(p.address)+", size: "+str(p.size)+").")
+            poller.failcounter=2
+            poller.connected = False
+            if device.connected != poller.connected:
+                device.connected = poller.connected
+                if verbosity >=1:
+                    print(f"Could not connect to device: {poller.topic}")
+                device.mqc.publish(globaltopic + poller.topic +"/connected", "offline", qos=1, retain=True)
         else:
-            self.device.errorCount+=1
-            if self.failcounter==1:
-                if args.autoremove:
-                    self.disabled=True
-                    if verbosity >=1:
-                        print("Poller "+self.topic+" with ID "+str(self.device_id)+" disabled (functioncode: "+str(self.functioncode)+", start reference: "+str(self.reference)+", size: "+str(self.size)+").")
-                    for p in pollers: #also fail all pollers with the same device id
-                        if p.device_id == self.device_id:
-                            p.failcounter=1
-                            p.disabled=True
-                            if verbosity >=1:
-                                print("Poller "+p.topic+" with ID "+str(p.device_id)+" disabled (functioncode: "+str(p.functioncode)+", start reference: "+str(p.reference)+", size: "+str(p.size)+").")
-                self.failcounter=2
-                self.connected = False
-                if self.device.connected != self.connected:
-                    self.device.connected = self.connected
-                    if verbosity >=1:
-                        print(f"Could not connect to device: {self.topic}")
-                    self.device.mqc.publish(globaltopic + self.topic +"/connected", "offline", qos=1, retain=True)
-            else:
-                if self.failcounter<2:
-                    self.failcounter+=1
+            if poller.failcounter<2:
+                poller.failcounter+=1
 
-    async def poll(self,client):
-            result = None
-            failed = False
-            data = []
-            try:
-                await asyncio.sleep(0.002)
-                if self.functioncode == 3:
-                    result = await client.read_holding_registers(self.reference, count=self.size, device_id=self.device_id)
-                    if result.isError():
-                        if verbosity >=1:
-                            # THIS IS NOT A PYTHON EXCEPTION, but a valid modbus message
-                            print(f"Received exception from device ({result})")
-                        failed = True
-                    else:
-                        data = result.registers
-                elif self.functioncode == 1:
-                    result = await client.read_coils(self.reference, count=self.size, device_id=self.device_id)
-                    if result.isError():
-                        if verbosity >=1:
-                            # THIS IS NOT A PYTHON EXCEPTION, but a valid modbus message
-                            print(f"Received exception from device ({result})")
-                        failed = True
-                    else:
-                        data = result.bits
-                elif self.functioncode == 2:
-                    result = await client.read_discrete_inputs(self.reference, count=self.size, device_id=self.device_id)
-                    if result.isError():
-                        if verbosity >=1:
-                            # THIS IS NOT A PYTHON EXCEPTION, but a valid modbus message
-                            print(f"Received exception from device ({result})")
-                        failed = True
-                    else:
-                        data = result.bits
-                elif self.functioncode == 4:
-                    result = await client.read_input_registers(self.reference, count=self.size, device_id=self.device_id)
-                    if result.isError():
-                        if verbosity >=1:
-                            # THIS IS NOT A PYTHON EXCEPTION, but a valid modbus message
-                            print(f"Received exception from device ({result})")
-                        failed = True
-                    else:
-                        data = result.registers
-                else:
-                    if verbosity >= 1:
-                        print(f"Unknown function code {self.functioncode} for poller {self.topic}")
+async def poll(poller, client):
+        result = None
+        failed = False
+        data = []
+        try:
+            await asyncio.sleep(0.002)
+            if poller.fc == 3:
+                result = await client.read_holding_registers(poller.address, count=poller.size, device_id=poller.unit_id)
+                if result.isError():
+                    if verbosity >=1:
+                        # THIS IS NOT A PYTHON EXCEPTION, but a valid modbus message
+                        print(f"Received exception from device ({result})")
                     failed = True
-
-                if not failed:
-                    if verbosity>=4:
-                        print("Read MODBUS, FC:"+str(self.functioncode)+", DataType:"+str(self.dataType)+", ref:"+str(self.reference)+", Qty:"+str(self.size)+", SI:"+str(self.device_id))
-                        print("Read MODBUS, DATA:"+str(data))
-                    for ref in self.readableReferences:
-                        val = data[ref.relativeReference:(ref.dtype.reg_amount+ref.relativeReference)]
-                        ref.checkPublish(val)
                 else:
-                    if verbosity>=1:
-                        print("Device "+str(self.device_id)+" responded with error code:"+str(result).split(',', 3)[2].rstrip(')'))
-            except ModbusException as exc:
-                if verbosity>=2:
-                    print(f"ERROR: exception in pymodbus {exc}")
-                failed = True
-            finally:
-                self.failCount(failed)
-
-    async def checkPoll(self, client):
-        if time.monotonic() >= self.next_due and not self.disabled:
-            await self.poll(client)
-            self.next_due=time.monotonic()+self.rate
-
-    def addReference(self,myRef):
-        #check reference configuration and maybe add to this poller or to the list of writable things
-        if myRef.topic not in self.device.occupiedTopics:
-            self.device.occupiedTopics.append(myRef.topic)
-
-            if "r" in myRef.rw or "w" in myRef.rw:
-                myRef.device=self.device
-                if verbosity >= 2:
-                    print('Added new reference \"' + myRef.topic + '\"')
-                if "r" in myRef.rw:
-                    if myRef.checkSanity(self.reference,self.size):
-                        self.readableReferences.append(myRef)
-                        if "w" not in myRef.rw:
-                            referenceList.append(myRef)
-
-                    else:
-                        print("Reference \""+str(myRef.reference)+"\" with topic "+myRef.topic+" is not in range ("+str(self.reference)+" to "+str(int(self.reference+self.size-1))+") of poller \""+self.topic+"\", therefore ignoring it for polling.")
-                if "w" in myRef.rw:
-                    if self.functioncode == 3: #holding registers
-                        myRef.writefunctioncode=6 #preset single register
-                    if self.functioncode == 1: #coils
-                        myRef.writefunctioncode=5 #force single coil
-                    if self.functioncode == 2: #read input status, not writable
-                        print("Reference \""+str(myRef.reference)+"\" with topic "+myRef.topic+" in poller \""+self.topic+"\" is not writable (discrete input)")
-                    if self.functioncode == 4: #read input register, not writable
-                        print("Reference \""+str(myRef.reference)+"\" with topic "+myRef.topic+" in poller \""+self.topic+"\" is not writable (input register)")
-                    if myRef.writefunctioncode is not None:
-                       self.device.writableReferences.append(myRef)
-                       referenceList.append(myRef)
+                    data = result.registers
+            elif poller.fc == 1:
+                result = await client.read_coils(poller.address, count=poller.size, device_id=poller.unit_id)
+                if result.isError():
+                    if verbosity >=1:
+                        # THIS IS NOT A PYTHON EXCEPTION, but a valid modbus message
+                        print(f"Received exception from device ({result})")
+                    failed = True
+                else:
+                    data = result.bits
+            elif poller.fc == 2:
+                result = await client.read_discrete_inputs(poller.address, count=poller.size, device_id=poller.unit_id)
+                if result.isError():
+                    if verbosity >=1:
+                        # THIS IS NOT A PYTHON EXCEPTION, but a valid modbus message
+                        print(f"Received exception from device ({result})")
+                    failed = True
+                else:
+                    data = result.bits
+            elif poller.fc == 4:
+                result = await client.read_input_registers(poller.address, count=poller.size, device_id=poller.unit_id)
+                if result.isError():
+                    if verbosity >=1:
+                        # THIS IS NOT A PYTHON EXCEPTION, but a valid modbus message
+                        print(f"Received exception from device ({result})")
+                    failed = True
+                else:
+                    data = result.registers
             else:
-                print("Reference \""+str(myRef.reference)+"\" with topic "+myRef.topic+" in poller \""+self.topic+"\" is neither read nor writable, therefore ignoring it.")
-        else:
-            print("Reference topic ("+str(myRef.topic)+") is already occupied for poller \""+self.topic+"\", therefore ignoring it.")
+                if verbosity >= 1:
+                    print(f"Unknown function code {poller.fc} for poller {poller.topic}")
+                failed = True
 
-class Reference:
-    def __init__(self,topic,reference,dtype,rw,poller,scaling,hajson):
-        self.topic=topic
-        self.reference=int(reference)
-        self.lastval=None
-        self.scale=None
-        self.json={}
+            if not failed:
+                if verbosity>=4:
+                    print("Read MODBUS, FC:"+str(poller.fc)+", ref:"+str(poller.address)+", Qty:"+str(poller.size)+", SI:"+str(poller.unit_id))
+                    print("Read MODBUS, DATA:"+str(data))
+                for ref in poller.references:
+                    val = data[ref.relative:(ref.dtype.reg_amount+ref.relative)]
+                    check_publish(ref, val)
+            else:
+                if verbosity>=1:
+                    print("Device "+str(poller.unit_id)+" responded with error code:"+str(result).split(',', 3)[2].rstrip(')'))
+        except ModbusException as exc:
+            if verbosity>=2:
+                print(f"ERROR: exception in pymodbus {exc}")
+            failed = True
+        finally:
+            fail_count(poller, failed)
 
-        if scaling:
+async def check_poll(poller, client):
+    if time.monotonic() >= poller.next_due and not poller.disabled:
+        await poll(poller, client)
+        poller.next_due=time.monotonic()+poller.rate
+
+def check_publish(ref, val):
+    if not ref.publish:
+        return
+    # Only publish messages after the initial connection has been made. If it became disconnected then the offline buffer will store messages,
+    # but only after the intial connection was made.
+    if mqc.initial_connection_made == True:
+        val = ref.dtype.combine(val, ref)
+        if ref.lastval != val or args.always_publish:
+            ref.lastval = val
+            if ref.scale:
+                val = val * ref.scale
             try:
-                self.scale=float(scaling)
-            except ValueError as e:
-              if verbosity>=1:
-                print("Scaling Error:", e)
-        if hajson:
-            try:
-                self.json=json.loads(hajson)
-            except ValueError as e:
-                print("json Error:", e)
-        self.publish = self.json.pop('publish', True)
-        self.rw=rw
-        self.relativeReference=None
-        self.writefunctioncode=None
-        self.device=None
-        self.poller=poller
-        if self.poller.functioncode in (1, 2):
-            self.dtype = parse_data_type("bool")
-        else:
-            self.dtype = parse_data_type(dtype)
-
-    def checkSanity(self,reference,size):
-        if self.reference in range(reference,size+reference) and self.reference+self.dtype.reg_amount-1 in range(reference,size+reference):
-            self.relativeReference=self.reference-reference
-            return True
-
-    def checkPublish(self,val):
-        if not self.publish:
-            return
-        # Only publish messages after the initial connection has been made. If it became disconnected then the offline buffer will store messages,
-        # but only after the intial connection was made.
-        if mqc.initial_connection_made == True:
-            val = self.dtype.combine(val, self)
-            if self.lastval != val or args.always_publish:
-                self.lastval = val
-                if self.scale:
-                    val = val * self.scale
-                try:
-                    publish_result = mqc.publish(globaltopic+self.device.name+"/state/"+self.topic,val,retain=True)
-                    if verbosity>=4:
-                        print("published MQTT topic: " + str(self.device.name+"/state/"+self.topic)+" value: " + str(self.lastval)+" RC:"+str(publish_result.rc))
-                except Exception:
-                    if verbosity>=1:
-                        print("Error publishing MQTT topic: " + str(self.device.name+"/state/"+self.topic)+"value: " + str(self.lastval))
+                publish_result = mqc.publish(globaltopic+ref.device.name+"/state/"+ref.topic,val,retain=True)
+                if verbosity>=4:
+                    print("published MQTT topic: " + str(ref.device.name+"/state/"+ref.topic)+" value: " + str(ref.lastval)+" RC:"+str(publish_result.rc))
+            except Exception:
+                if verbosity>=1:
+                    print("Error publishing MQTT topic: " + str(ref.device.name+"/state/"+ref.topic)+"value: " + str(ref.lastval))
 
 def _handle_tz_set(ref, name):
     """In-memory IANA timezone override for a packedtime ref. Validates the
@@ -375,7 +258,7 @@ def _handle_tz_set(ref, name):
     # Republish device discovery (the `timezone` field flows through ref.json)
     # and the companion text state.
     if addToHass and adder:
-        adder.addAll(referenceList)
+        adder.addAll(config.references)
     else:
         # Discovery isn't enabled, but still keep the state topic in sync
         # in case something else is subscribed.
@@ -388,7 +271,7 @@ async def writehandler(userdata, msg, client):
         if str(msg.payload.decode("utf-8")) == "online" and addToHass and adder:
             if verbosity >= 1:
                 print("Home Assistant online — republishing discovery configs")
-            adder.addAll(referenceList)
+            adder.addAll(config.references)
         return
     if str(msg.topic) == globaltopic+"reset-autoremove":
         if not args.autoremove and verbosity>=1:
@@ -398,12 +281,12 @@ async def writehandler(userdata, msg, client):
             if payload == "True" or payload == "1":
                 if verbosity>=1:
                     print("Reactivating previously disabled pollers (command from MQTT)")
-                for p in pollers:
+                for p in config.pollers:
                     if p.disabled == True:
                         p.disabled = False
                         p.failcounter = 0
                         if verbosity>=1:
-                            print("Reactivated poller "+p.topic+" with ID "+str(p.device_id)+ " and functioncode "+str(p.functioncode)+".")
+                            print("Reactivated poller "+p.topic+" with ID "+str(p.unit_id)+ " and functioncode "+str(p.fc)+".")
 
         return
     parts = msg.topic.split("/")
@@ -413,9 +296,8 @@ async def writehandler(userdata, msg, client):
     reference = "/".join(parts[3:])
     if function != 'set':
         return
-    myRef = None
     myDevice = None
-    for iterDevice in deviceList:
+    for iterDevice in config.devices:
         if iterDevice.name == device:
             myDevice = iterDevice
     if myDevice is None: # no such device
@@ -426,7 +308,7 @@ async def writehandler(userdata, msg, client):
     if reference.endswith('/timezone'):
         parent_topic = reference[:-len('/timezone')]
         parent_ref = next(
-            (r for r in referenceList
+            (r for r in config.references
              if r.device is myDevice and r.topic == parent_topic),
             None)
         if parent_ref is None or parent_ref.dtype.name != "packedtime":
@@ -434,9 +316,7 @@ async def writehandler(userdata, msg, client):
         _handle_tz_set(parent_ref, str(msg.payload.decode("utf-8")))
         return
 
-    for iterRef in myDevice.writableReferences:
-        if iterRef.topic == reference:
-            myRef=iterRef
+    myRef = myDevice.writable.get(reference)
     if myRef is None: # no such reference
         return
     payload = str(msg.payload.decode("utf-8"))
@@ -451,36 +331,36 @@ async def writehandler(userdata, msg, client):
         values = value if isinstance(value, list) else [value]
         for n in range(tries):
             try:
-                match myRef.writefunctioncode:
+                match myRef.write_fc:
                     case 5:
                         writeType = "coils"
-                        result = await client.write_coil(int(myRef.reference),value,device_id=int(myRef.device.device_id))
+                        result = await client.write_coil(int(myRef.address),value,device_id=int(myRef.device.unit_id))
                     case 6:
                         if len(values)>1 or args.avoid_fc6:
                             writeType = "registers"
-                            result = await client.write_registers(int(myRef.reference),values,device_id=int(myRef.device.device_id))
+                            result = await client.write_registers(int(myRef.address),values,device_id=int(myRef.device.unit_id))
                         else:
                             writeType = "register"
-                            result = await client.write_register(int(myRef.reference),values[0],device_id=int(myRef.device.device_id))
+                            result = await client.write_register(int(myRef.address),values[0],device_id=int(myRef.device.unit_id))
 
                 if result.isError():
                     if verbosity>=1:
                         # THIS IS NOT A PYTHON EXCEPTION, but a valid modbus message
-                        print(f"Writing '{value}' to device {str(myDevice.name)}, ID={str(myDevice.device_id)} at Reference={str(myRef.reference)} ({myRef.topic}) using function code {str(myRef.writefunctioncode)} FAILED! (Devices responded with errorcode{str(result).split(',', 3)[2].rstrip(')')}. ({result})")
+                        print(f"Writing '{value}' to device {str(myDevice.name)}, ID={str(myDevice.unit_id)} at Reference={str(myRef.address)} ({myRef.topic}) using function code {str(myRef.write_fc)} FAILED! (Devices responded with errorcode{str(result).split(',', 3)[2].rstrip(')')}. ({result})")
                         print(f"Retrying. attempt #{n+1}")
                     await asyncio.sleep(delay)
                     delay *= 1.5
                 else:
-                    myRef.checkPublish(values) # writing was successful => we can assume, that the corresponding state can be set and published
+                    check_publish(myRef, values) # writing was successful => we can assume, that the corresponding state can be set and published
                     if verbosity>=3:
-                        print(f"Writing {writeType} values to device {str(myDevice.name)}, ID={str(myDevice.device_id)} at Reference={str(myRef.reference)} successful.")
+                        print(f"Writing {writeType} values to device {str(myDevice.name)}, ID={str(myDevice.unit_id)} at Reference={str(myRef.address)} successful.")
                     return
             except ModbusException as exc:
                 if verbosity >= 1:
-                    print(f"Error writing to device {str(myDevice.device_id)}: {exc}")
+                    print(f"Error writing to device {str(myDevice.unit_id)}: {exc}")
     else:
         if verbosity >= 1:
-            print(f"Writing to device {str(myDevice.name)}, ID={str(myDevice.device_id)} at Reference={str(myRef.reference)} using function code {str(myRef.writefunctioncode)} not possible. Given value is not valid.")
+            print(f"Writing to device {str(myDevice.name)}, ID={str(myDevice.unit_id)} at Reference={str(myRef.address)} using function code {str(myRef.write_fc)} not possible. Given value is not valid.")
 
 def messagehandler(mqc,userdata,msg):
     writeQueue.put((userdata, msg))
@@ -497,18 +377,18 @@ def connecthandler(mqc, userdata, flags, reason_code, properties):
         mqc.publish(globaltopic + "connected", "online", qos=1, retain=True)
         # Start per-device MQTT clients (each carries its own LWT).
         # First connect only — paho's loop handles subsequent reconnections automatically.
-        for device in deviceList:
-            if device.mqc is not None and not device._mqtt_started:
+        for device in config.devices:
+            if device.mqc is not None and not device.mqtt_started:
                 try:
                     device.mqc.connect(args.mqtt_host, mqtt_port, 60)
                     device.mqc.loop_start()
-                    device._mqtt_started = True
+                    device.mqtt_started = True
                 except Exception as e:
                     if verbosity >= 1:
                         print(f"Failed to start MQTT client for device {device.name}: {e}")
         if addToHass and adder:
             mqc.subscribe("homeassistant/status")
-            adder.addAll(referenceList)
+            adder.addAll(config.references)
     else:
         if verbosity>=1:
             print(f"MQTT Failed to connect: {reason_code}")
@@ -529,6 +409,7 @@ async def async_main(parsed_args):
     global loopBreak
     global globaltopic
     global control
+    global config
 
     control = Control()
     signal.signal(signal.SIGINT, signal_handler)
@@ -549,66 +430,9 @@ async def async_main(parsed_args):
     if verbosity>=0:
         print('Starting spiciermodbus2mqtt V%s with topic prefix \"%s\"' %(__version__, globaltopic))
 
-    # type, topic, device_id,  ref,           size, functioncode, rate
-    # type, topic, reference, rw, interpretation,      scaling,
-
-    # Now let's read the config file
-    with open(args.config,"r") as csvfile:
-        csvfile.seek(0)
-        reader=csv.DictReader(csvfile)
-        currentPoller=None
-        for row in reader:
-            if row["type"]=="poller" or row["type"]=="poll":
-                rate = float(row["col6"])
-                device_id = int(row["col2"])
-                reference = int(row["col3"])
-                size = int(row["col4"])
-
-                if row["col5"] == "holding_register":
-                    functioncode = 3
-                    dataType="int16"
-                    if size>123: #applies to TCP, RTU should support 125 registers. But let's be safe.
-                        currentPoller=None
-                        if verbosity>=1:
-                            print("Too many registers (max. 123). Ignoring poller "+row["topic"]+".")
-                        continue
-                elif row["col5"] == "coil":
-                    functioncode = 1
-                    dataType="bool"
-                    if size>2000: #some implementations don't seem to support 2008 coils/inputs
-                        currentPoller=None
-                        if verbosity>=1:
-                            print("Too many coils (max. 2000). Ignoring poller "+row["topic"]+".")
-                        continue
-                elif row["col5"] == "input_register":
-                    functioncode = 4
-                    dataType="int16"
-                    if size>123:
-                        currentPoller=None
-                        if verbosity>=1:
-                            print("Too many registers (max. 123). Ignoring poller "+row["topic"]+".")
-                        continue
-                elif row["col5"] == "input_status":
-                    functioncode = 2
-                    dataType="bool"
-                    if size>2000:
-                        currentPoller=None
-                        if verbosity>=1:
-                            print("Too many inputs (max. 2000). Ignoring poller "+row["topic"]+".")
-                        continue
-
-                else:
-                    print("Unknown function code ("+row["col5"]+" ignoring poller "+row["topic"]+".")
-                    currentPoller=None
-                    continue
-                currentPoller = Poller(row["topic"],rate,device_id,functioncode,reference,size,dataType)
-                pollers.append(currentPoller)
-                continue
-            elif row["type"]=="reference" or row["type"]=="ref":
-                if currentPoller is not None:
-                    currentPoller.addReference(Reference(row["topic"],row["col2"],row["col4"],row["col3"],currentPoller,row["col5"],row["col6"]))
-                else:
-                    print("No poller for reference "+row["topic"]+".")
+    config = load_config(args.config)
+    for device in config.devices:
+        device.next_due = time.monotonic() + args.diagnostics_rate
 
     #Setup MODBUS Client
     client: ModbusClient.ModbusBaseClient | None = None
@@ -670,7 +494,7 @@ async def async_main(parsed_args):
     mqc.initial_connection_made = False
     apply_mqtt_security(mqc)
 
-    if len(pollers)<1:
+    if len(config.pollers)<1:
         print("No pollers. Exitting.")
         sys.exit(0)
 
@@ -681,7 +505,7 @@ async def async_main(parsed_args):
     # Create a dedicated MQTT client per device, each with its own LWT.
     # On crash the broker fires the LWT immediately; on reconnect the device
     # client's on_connect publishes "offline" again before polling resumes.
-    for device in deviceList:
+    for device in config.devices:
         dev_clientid = globaltopic.rstrip("/").replace("/","_") + "_" + device.name + "_" + str(int(time.time()))
         dev_mqc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=dev_clientid)
         dev_mqc.will_set(globaltopic + device.name + "/connected", "offline", qos=1, retain=True)
@@ -727,31 +551,31 @@ async def async_main(parsed_args):
         if mqc.initial_connection_made: #Don't start polling unless the initial connection to MQTT has been made, no offline MQTT storage will be available until then.
             if client.connected:
                 try:
-                    if len(pollers) > 0:
-                        await pollers[current_poller].checkPoll(client)
+                    if len(config.pollers) > 0:
+                        await check_poll(config.pollers[current_poller], client)
                         current_poller = current_poller + 1
-                        if current_poller == len(pollers):
+                        if current_poller == len(config.pollers):
                             current_poller=0
                     if not writeQueue.empty():
                         writeObj = writeQueue.get(False)
                         await writehandler(writeObj[0],writeObj[1],client)
 
-                    for d in deviceList:
-                        d.publishDiagnostics()
+                    for d in config.devices:
+                        publish_diagnostics(d)
                     anyAct=False
 
-                    for p in pollers:
+                    for p in config.pollers:
                         if p.disabled is not True:
                             anyAct=True
 
                     if not anyAct:
                         time.sleep(0.010)
-                        for p in pollers:
+                        for p in config.pollers:
                             if p.disabled == True:
                                 p.disabled = False
                                 p.failcounter = 0
                                 if verbosity>=1:
-                                    print("Reactivated poller "+p.topic+" with ID "+str(p.device_id)+ " and functioncode "+str(p.functioncode)+".")
+                                    print("Reactivated poller "+p.topic+" with ID "+str(p.unit_id)+ " and functioncode "+str(p.fc)+".")
                 except Exception as e:
                     if verbosity>=1:
                         print("Error: "+str(e)+" when polling or publishing, trying again...")
@@ -764,7 +588,7 @@ async def async_main(parsed_args):
                 client.close()
                 await client.connect()
     client.close()
-    for device in deviceList:
+    for device in config.devices:
         if device.mqc:
             device.mqc.publish(globaltopic + device.name + "/connected", "offline", qos=1, retain=True)
             device.mqc.loop_stop()

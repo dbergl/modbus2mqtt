@@ -33,9 +33,7 @@ def _reset_legacy_globals() -> None:
     """The legacy bridge keeps its state in module globals; start each run clean."""
     from modbus2mqtt import modbus2mqtt as legacy
 
-    legacy.pollers.clear()
-    legacy.deviceList.clear()
-    legacy.referenceList.clear()
+    legacy.config = None
     legacy.writeQueue = queue.SimpleQueue()
     legacy.adder = None
 
