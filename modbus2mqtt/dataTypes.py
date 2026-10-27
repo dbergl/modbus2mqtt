@@ -1,5 +1,7 @@
 import math
 import struct
+from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 class DataTypes:
     def parsebool(refobj,payload):
@@ -15,7 +17,7 @@ class DataTypes:
         try:
             len(val)
             return bool(val[0])
-        except:
+        except Exception:
             return bool(val)
 
     def parseString(refobj,msg):
@@ -44,14 +46,14 @@ class DataTypes:
                 out = None
             else:
                 out = value&0xFFFF
-        except:
+        except Exception:
             out=None
         return out
     def combineint16(refobj,val):
         try:
             len(val)
             myval=val[0]
-        except:
+        except Exception:
             myval=val
 
         if (myval & 0x8000) > 0:
@@ -67,7 +69,7 @@ class DataTypes:
                 out = None
             else:
                 out=[int(value>>16),int(value&0x0000FFFF)]
-        except:
+        except Exception:
             out=None
         return out
     def combineuint32LE(refobj,val):
@@ -81,7 +83,7 @@ class DataTypes:
                 out = None
             else:
                 out=[int(value&0x0000FFFF),int(value>>16)]
-        except:
+        except Exception:
             out=None
         return out
     def combineuint32BE(refobj,val):
@@ -89,26 +91,28 @@ class DataTypes:
         return out
 
     def parseint32LE(refobj,msg):
-        #try:
-        #    value=int(msg)
-        #    value = int.from_bytes(value.to_bytes(4, 'little', signed=False), 'little', signed=True)
-        #except:
-        #    out=None
-        #return out
-        return None
+        try:
+            value = int(msg)
+            if value > 2147483647 or value < -2147483648:
+                return None
+            value_unsigned = value & 0xFFFFFFFF
+            return [int(value_unsigned >> 16), int(value_unsigned & 0x0000FFFF)]
+        except Exception:
+            return None
     def combineint32LE(refobj,val):
         out = val[0]*65536 + val[1]
         out = int.from_bytes(out.to_bytes(4, 'little', signed=False), 'little', signed=True)
         return out
 
     def parseint32BE(refobj,msg):
-        #try:
-        #    value=int(msg)
-        #    value = int.from_bytes(value.to_bytes(4, 'big', signed=False), 'big', signed=True)
-        #except:
-        #    out=None
-        #return out
-        return None
+        try:
+            value = int(msg)
+            if value > 2147483647 or value < -2147483648:
+                return None
+            value_unsigned = value & 0xFFFFFFFF
+            return [int(value_unsigned & 0x0000FFFF), int(value_unsigned >> 16)]
+        except Exception:
+            return None
     def combineint32BE(refobj,val):
         out = val[0] + val[1]*65536
         out = int.from_bytes(out.to_bytes(4, 'big', signed=False), 'big', signed=True)
@@ -119,42 +123,32 @@ class DataTypes:
             value=int(msg)
             if value > 65535 or value < 0:
                 value = None
-        except:
+        except Exception:
             value=None
         return value
     def combineuint16(refobj,val):
         try:
             len(val)
             return val[0]
-        except:
+        except Exception:
             return val
 
     def parsefloat32LE(refobj,msg):
         try:
-            out=None
-            #value=int(msg)
-            #if value > 4294967295 or value < 0:
-            #    out = None
-            #else:
-            #    out=[int(value&0x0000FFFF),int(value>>16)]
-        except:
-            out=None
-        return out
+            packed = struct.unpack('=I', struct.pack('=f', float(msg)))[0]
+            return [int(packed >> 16), int(packed & 0x0000FFFF)]
+        except Exception:
+            return None
     def combinefloat32LE(refobj,val):
         out = str(struct.unpack('=f', struct.pack('=I',int(val[0])<<16|int(val[1])))[0])
         return out
 
     def parsefloat32BE(refobj,msg):
         try:
-            out=None
-            #value=int(msg)
-            #if value > 4294967295 or value < 0:
-            #    out = None
-            #else:
-            #    out=[int(value&0x0000FFFF),int(value>>16)]
-        except:
-            out=None
-        return out
+            packed = struct.unpack('=I', struct.pack('=f', float(msg)))[0]
+            return [int(packed & 0x0000FFFF), int(packed >> 16)]
+        except Exception:
+            return None
     def combinefloat32BE(refobj,val):
         out = str(struct.unpack('=f', struct.pack('=I',int(val[1])<<16|int(val[0])))[0])
         return out
@@ -169,7 +163,7 @@ class DataTypes:
                 return None
             for x in range(0, len(msg)):
                 out.append(int(msg[x]))
-        except:
+        except Exception:
             return None
         return out
     def combineListUint16(refobj,val):
@@ -177,6 +171,83 @@ class DataTypes:
         for x in val:
             out+=str(x)+" "
         return out
+
+    def _refTargetZone(refobj):
+        # Resolve an optional IANA timezone configured on the reference's HA
+        # JSON (e.g. {"timezone": "America/Los_Angeles"}). Returns a ZoneInfo
+        # or None. Unknown zone names are treated as not configured.
+        j = getattr(refobj, 'json', None) or {}
+        name = j.get('timezone')
+        if not name:
+            return None
+        try:
+            return ZoneInfo(name)
+        except ZoneInfoNotFoundError:
+            return None
+
+    def parsePackedTime(refobj,msg):
+        # Accepts ISO 8601 "YYYY-MM-DDTHH:MM:SS[.fff][±HH:MM|Z]" and the
+        # legacy "YYYY-MM-DD HH:MM:SS" form. The device clock is wall-clock
+        # local; an aware input is converted to the configured zone (or
+        # the host's local zone) before stripping tzinfo.
+        s = msg.strip().replace('Z', '+00:00').replace(' ', 'T')
+        try:
+            dt = datetime.fromisoformat(s)
+        except ValueError:
+            return None
+        if dt.tzinfo is not None:
+            target = DataTypes._refTargetZone(refobj)
+            dt = dt.astimezone(target) if target else dt.astimezone()
+            dt = dt.replace(tzinfo=None)
+        reg0 = ((dt.year % 100) << 8) | dt.month
+        reg1 = (dt.day << 8) | dt.hour
+        reg2 = (dt.minute << 8) | dt.second
+        return [reg0, reg1, reg2]
+    def combinePackedTime(refobj,val):
+        year   = (val[0] >> 8) & 0xFF
+        month  =  val[0] & 0xFF
+        day    = (val[1] >> 8) & 0xFF
+        hour   =  val[1] & 0xFF
+        minute = (val[2] >> 8) & 0xFF
+        second =  val[2] & 0xFF
+        try:
+            dt = datetime(2000 + year, month, day, hour, minute, second)
+        except ValueError:
+            return None
+        if DataTypes._refTargetZone(refobj) is not None:
+            # Naive ISO; HA's discovery `timezone` field interprets it.
+            return dt.isoformat(timespec='seconds')
+        # No tz configured — attach the host's local offset so HA gets
+        # a fully-qualified timestamp.
+        return dt.astimezone().isoformat(timespec='seconds')
+
+    def parsehiByte(refobj,msg):
+        try:
+            value=int(msg)
+            if value > 255 or value < 0:
+                return None
+            return value << 8
+        except Exception:
+            return None
+    def combinehiByte(refobj,val):
+        try:
+            return (val[0] >> 8) & 0xFF
+        except Exception:
+            return (val >> 8) & 0xFF
+
+    def parseloByte(refobj,msg):
+        try:
+            value=int(msg)
+            if value > 255 or value < 0:
+                return None
+            return value & 0xFF
+        except Exception:
+            return None
+    def combineloByte(refobj,val):
+        try:
+            return val[0] & 0xFF
+        except Exception:
+            return val & 0xFF
 
     def parseDataType(refobj,conf):
         if conf is None or conf == "uint16" or conf == "":
@@ -186,7 +257,7 @@ class DataTypes:
         elif conf.startswith("list-uint16-"):
             try:
                 length = int(conf[12:15])
-            except:
+            except Exception:
                 length = 1
             if length > 50:
                 print("Data type list-uint16: length too long")
@@ -197,7 +268,7 @@ class DataTypes:
         elif conf.startswith("string"):
             try:
                 length = int(conf[6:9])
-            except:
+            except Exception:
                 length = 2
             if length > 100:
                 print("Data type string: length too long")
@@ -241,3 +312,15 @@ class DataTypes:
            refobj.regAmount=2
            refobj.parse=DataTypes.parsefloat32BE
            refobj.combine=DataTypes.combinefloat32BE
+        elif conf == "packedtime":
+            refobj.regAmount=3
+            refobj.parse=DataTypes.parsePackedTime
+            refobj.combine=DataTypes.combinePackedTime
+        elif conf == "hibyte":
+            refobj.regAmount=1
+            refobj.parse=DataTypes.parsehiByte
+            refobj.combine=DataTypes.combinehiByte
+        elif conf == "lobyte":
+            refobj.regAmount=1
+            refobj.parse=DataTypes.parseloByte
+            refobj.combine=DataTypes.combineloByte

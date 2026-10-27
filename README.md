@@ -132,15 +132,69 @@ column 3 contains a 'w', the new state will be written to coil 9 of the slave de
 Some other "interpretations" of register contents are also supported:
 ```
 poll,garage,1,0,10,holding_register,2
-ref,counter1,0,rw,float32BE 
+ref,counter1,0,rw,float32BE
 ref,counter2,2,rw,uint16
 ref,somestring,3,rw,string6
 ```
 This will poll 10 consecutive registers from Modbus slave id 1, starting at holding register 0.
 
-The last row now contains the data format. Supported values: float32BE, float32LE, uint32BE, uint32LE, uint16 (default), stringXXX with XXX being the string length in bytes.
+The last row now contains the data format. Supported data types:
+
+| Type | Registers | Description |
+|------|-----------|-------------|
+| `uint16` | 1 | Unsigned 16-bit integer (default) |
+| `int16` | 1 | Signed 16-bit integer |
+| `uint32BE` | 2 | Unsigned 32-bit, big-endian word order |
+| `uint32LE` | 2 | Unsigned 32-bit, little-endian word order |
+| `int32BE` | 2 | Signed 32-bit, big-endian word order |
+| `int32LE` | 2 | Signed 32-bit, little-endian word order |
+| `float32BE` | 2 | 32-bit float, big-endian word order |
+| `float32LE` | 2 | 32-bit float, little-endian word order |
+| `bool` | 1 | Boolean; publishes `True`/`False` |
+| `stringXXX` | XX/2 | ASCII string, XX = byte length (must be even) |
+| `list-uint16-XX` | XX | Space-separated list of XX uint16 values |
+| `hibyte` | 1 | High byte (bits 15–8) of a 16-bit register; value 0–255 |
+| `lobyte` | 1 | Low byte (bits 7–0) of a 16-bit register; value 0–255 |
+| `packedtime` | 3 | Three consecutive registers each packing two bytes as `HHHHHHHH LLLLLLLL`; publishes as `YYYY-MM-DD HH:MM:SS` |
 
 Note that a float32BE will of course span over two registers (0 and 1 in the above example) and that you can still define another reference object occupying the same registers. This might come in handy if you want to modify a small part of a string separately.
+
+#### hibyte / lobyte
+
+Some devices pack two 8-bit values into a single 16-bit register (high byte and low byte). Two references can point at the same register address using different types to read each half independently:
+
+```
+poll,inverter,1,4402,3,holding_register,10
+ref,system_time/year,4402,rw,hibyte
+ref,system_time/month,4402,rw,lobyte
+ref,system_time/day,4403,rw,hibyte
+ref,system_time/hour,4403,rw,lobyte
+```
+
+**Write note:** writing to a `hibyte` ref sends `value << 8` (low byte zeroed) and writing to a `lobyte` ref sends `value & 0xFF` (high byte zeroed). There is no read-modify-write, so writing one half will clobber the other byte in the same register.
+
+#### packedtime
+
+`packedtime` reads three consecutive registers where each register holds two packed 8-bit time components and publishes them as a single formatted datetime string:
+
+```
+poll,inverter,1,4402,3,holding_register,10
+ref,system_time/datetime,4402,rw,packedtime
+```
+
+The three registers are interpreted as:
+
+| Register offset | High byte | Low byte |
+|-----------------|-----------|----------|
+| +0 | Year (2-digit, e.g. 25 = 2025) | Month |
+| +1 | Day | Hour |
+| +2 | Minute | Second |
+
+Published value: `2025-03-26T14:30:00+00:00` (ISO 8601)
+
+Writing accepts ISO 8601 (`2025-03-26T14:30:00+00:00`, `2025-03-26T14:30:00`) or space-separated (`2025-03-26 14:30:00`) format and encodes it back into the three registers in a single multi-register write.
+
+Use `ha_platform: text` to get a read/write text entity in Home Assistant. The current value is shown and can be edited directly in the UI.
 
 
 Topics
@@ -185,8 +239,80 @@ So what exactly do they do? Completely different things actually.
 
 * addToHomeAssistant.py can only be run within modbus2mqtt.py. It can be invoked by passing --add-to-homeassistant when running modbus2mqtt.py. It uses MQTT messages to add all the stuff from the .csv file to home assistant automatically. Just try it. I recommend using a non productive instance of Home Assistant for testing :-)
 
-
 * create-openhab-conf.py can be used independently. It parses the .csv file and creates configuration files (.things and .items) for OpenHAB (version 2+ only). This is of course not necessary for using spicierModbus2mqtt whit OpenHab but it removes a lot of hassle from it. I use it to create a basic working structure and then rename and rearrange the items by hand.
+
+### Home Assistant MQTT Discovery (col6)
+
+The optional 7th column (`col6`) of a reference row accepts a JSON object that controls how the entity appears in Home Assistant and whether it is published to MQTT at all.
+
+#### Platform auto-detection
+
+If no `ha_platform` key is provided, the platform is chosen automatically:
+
+| Data type | Writable (`w`) | Read-only (`r`) |
+|-----------|----------------|-----------------|
+| `bool` / coil | `switch` | `binary_sensor` |
+| any other | `number` | `sensor` |
+
+#### Supported JSON keys
+
+| Key | Description |
+|-----|-------------|
+| `ha_platform` | Override the auto-detected HA platform (e.g. `"switch"`, `"button"`, `"binary_sensor"`, `"sensor"`, `"number"`) |
+| `name` | Display name in Home Assistant |
+| `device_class` | HA device class (e.g. `"voltage"`, `"current"`, `"power"`, `"problem"`, `"timestamp"`) |
+| `unit_of_measurement` | Unit string shown in HA (e.g. `"V"`, `"A"`, `"W"`) |
+| `value_template` | Jinja2 template applied to the state value for `sensor`/`binary_sensor` platforms (e.g. `"{{ value \| float / 10 }}"`) |
+| `val_tpl` | Jinja2 template to extract the display value for the `number` platform |
+| `cmd_tpl` | Jinja2 template to convert a `number` input back to a raw register value (e.g. `"{{ (value \| float * 10) \| int }}"`) |
+| `min` / `max` / `step` | Constraints for the `number` platform |
+| `suggested_display_precision` | Decimal places shown in HA |
+| `payload_press` | Payload sent when a `button` entity is pressed |
+| `stat_on` / `stat_off` | State values that map to on/off for `switch` |
+| `payload_on` / `payload_off` | Payloads written when a `switch` or `binary_sensor` is toggled |
+| `publish` | Set to `false` to suppress both MQTT state publishing and HA discovery for this reference entirely |
+
+#### Examples
+
+Basic sensor with unit:
+```
+ref,AC_Input_Voltage,4000,r,,,"{""name"": ""AC Input Voltage"", ""device_class"": ""voltage"", ""unit_of_measurement"": ""V""}"
+```
+
+Sensor with scaling template (register stores value × 10):
+```
+ref,charging_current,4328,r,,,"{""name"": ""Charging Current"", ""device_class"": ""current"", ""unit_of_measurement"": ""A"", ""suggested_display_precision"": 1, ""value_template"": ""{{ value | float / 10 }}""}"
+```
+
+Writable number with round-trip scaling:
+```
+ref,chargevolts,4426,rw,,,"{""ha_platform"": ""number"", ""device_class"": ""voltage"", ""unit_of_measurement"": ""V"", ""val_tpl"": ""{{ value | float / 10 }}"", ""cmd_tpl"": ""{{ (value | float * 10) | int }}"", ""min"": 46.0, ""max"": 58.4, ""step"": 0.1, ""name"": ""Charge Voltage""}"
+```
+
+Switch (holding register, not a coil):
+```
+ref,onoff,57088,rw,,,"{""ha_platform"": ""switch"", ""name"": ""Inverter Power"", ""stat_on"": ""1"", ""stat_off"": ""0"", ""payload_on"": ""1"", ""payload_off"": ""0""}"
+```
+
+Button (write-only):
+```
+ref,reset,4417,w,,,"{""ha_platform"": ""button"", ""name"": ""Inverter Reset"", ""payload_press"": ""1""}"
+```
+
+Binary sensor with integer 0/1 values (not a coil):
+```
+ref,is_charging,4301,r,,,"{""ha_platform"": ""binary_sensor"", ""name"": ""Is Charging"", ""payload_on"": ""1"", ""payload_off"": ""0""}"
+```
+
+Suppress publishing entirely (value is read from device but never sent to MQTT or HA):
+```
+ref,password,4108,rw,,,"{""ha_platform"": ""number"", ""name"": ""Inverter Password"", ""min"": 0, ""max"": 255, ""step"": 1, ""publish"": false}"
+```
+
+Packed datetime from three registers (readable and writable as a text entity in HA):
+```
+ref,system_time/datetime,4402,rw,packedtime,,"{""ha_platform"": ""text"", ""name"": ""System Time""}"
+```
 
 Docker
 ------

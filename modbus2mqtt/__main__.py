@@ -1,3 +1,4 @@
 #!/usr/bin/env python
-from .modbus2mqtt import main
-main()
+import asyncio
+from .modbus2mqtt import async_main
+asyncio.run(async_main())
