@@ -203,7 +203,7 @@ class Poller:
                     else:
                         data = result.registers
                 elif self.functioncode == 1:
-                    result = await client.read_coils(self.reference, self.size, device_id=self.device_id)
+                    result = await client.read_coils(self.reference, count=self.size, device_id=self.device_id)
                     if result.isError():
                         if verbosity >=1:
                             # THIS IS NOT A PYTHON EXCEPTION, but a valid modbus message
@@ -212,7 +212,7 @@ class Poller:
                     else:
                         data = result.bits
                 elif self.functioncode == 2:
-                    result = await client.read_discrete_inputs(self.reference, self.size, device_id=self.device_id)
+                    result = await client.read_discrete_inputs(self.reference, count=self.size, device_id=self.device_id)
                     if result.isError():
                         if verbosity >=1:
                             # THIS IS NOT A PYTHON EXCEPTION, but a valid modbus message
@@ -221,7 +221,7 @@ class Poller:
                     else:
                         data = result.bits
                 elif self.functioncode == 4:
-                    result = await client.read_input_registers(self.reference, self.size, device_id=self.device_id)
+                    result = await client.read_input_registers(self.reference, count=self.size, device_id=self.device_id)
                     if result.isError():
                         if verbosity >=1:
                             # THIS IS NOT A PYTHON EXCEPTION, but a valid modbus message
@@ -466,7 +466,8 @@ async def writehandler(userdata, msg, client):
                             valLen=1
                         if valLen>1 or args.avoid_fc6:
                             writeType = "registers"
-                            result = await client.write_registers(int(myRef.reference),value,device_id=int(myRef.device.device_id))
+                            values = value if valLen>1 else [value]
+                            result = await client.write_registers(int(myRef.reference),values,device_id=int(myRef.device.device_id))
                         else:
                             writeType = "register"
                             result = await client.write_register(int(myRef.reference),value,device_id=int(myRef.device.device_id))
