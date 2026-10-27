@@ -1,12 +1,14 @@
-FROM python:3.14-slim-bookworm AS builder
-RUN apt-get update && apt-get install build-essential -y
-RUN pip install --upgrade pip
+FROM python:3.14-slim AS builder
+
+# No compiler toolchain here on purpose: every runtime dependency (paho-mqtt,
+# pymodbus, pyserial) ships a pure-Python py3-none-any wheel, so nothing is
+# built from source.
 
 COPY requirements.txt .
 
 RUN pip install --user --no-cache-dir -r requirements.txt
 
-FROM python:3.14-slim-bookworm
+FROM python:3.14-slim
 
 RUN adduser worker && usermod -a -G dialout worker && install -o worker -g worker -d /config /logs
 
