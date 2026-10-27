@@ -1,0 +1,82 @@
+{
+  "avty": [
+    {
+      "pl_avail": "online",
+      "pl_not_avail": "offline",
+      "t": "modbus/dev/connected"
+    }
+  ],
+  "cmps": {
+    "clock": {
+      "name": "clock",
+      "p": "sensor",
+      "stat_t": "modbus/dev/state/clock",
+      "timezone": "America/Los_Angeles",
+      "uniq_id": "modbus_dev_1_clock"
+    },
+    "f32": {
+      "name": "f32",
+      "p": "sensor",
+      "stat_t": "modbus/dev/state/f32",
+      "uniq_id": "modbus_dev_1_f32"
+    },
+    "hi": {
+      "name": "hi",
+      "p": "sensor",
+      "stat_t": "modbus/dev/state/hi",
+      "uniq_id": "modbus_dev_1_hi"
+    },
+    "i16": {
+      "cmd_t": "modbus/dev/set/i16",
+      "name": "i16",
+      "p": "number",
+      "stat_t": "modbus/dev/state/i16",
+      "uniq_id": "modbus_dev_1_i16"
+    },
+    "inp": {
+      "name": "inp",
+      "p": "sensor",
+      "stat_t": "modbus/dev/state/inp",
+      "uniq_id": "modbus_dev_1_inp"
+    },
+    "name": {
+      "name": "name",
+      "p": "sensor",
+      "stat_t": "modbus/dev/state/name",
+      "uniq_id": "modbus_dev_1_name"
+    },
+    "relay": {
+      "cmd_t": "modbus/dev/set/relay",
+      "name": "relay",
+      "p": "switch",
+      "pl_off": "False",
+      "pl_on": "True",
+      "stat_off": "False",
+      "stat_on": "True",
+      "stat_t": "modbus/dev/state/relay",
+      "uniq_id": "modbus_dev_1_relay"
+    },
+    "s32": {
+      "cmd_t": "modbus/dev/set/s32",
+      "name": "s32",
+      "p": "number",
+      "stat_t": "modbus/dev/state/s32",
+      "uniq_id": "modbus_dev_1_s32"
+    },
+    "u16": {
+      "name": "u16",
+      "p": "sensor",
+      "stat_t": "modbus/dev/state/u16",
+      "uniq_id": "modbus_dev_1_u16"
+    }
+  },
+  "dev": {
+    "ids": "modbus_dev_1",
+    "mf": "modbus",
+    "name": "dev"
+  },
+  "o": {
+    "name": "modbus2mqtt",
+    "url": "https://github.com/dbergl/modbus2mqtt/"
+  }
+}
