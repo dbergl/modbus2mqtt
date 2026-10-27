@@ -130,6 +130,25 @@ async def test_link_down_is_not_device_error(device, link):
     assert link.connected is True
 
 
+async def test_reconnect_timeout_is_link_down(device):
+    """A connect timeout during tmodbus's auto-reconnect inside a request is the link, not the device."""
+    lnk = create_link(tcp_args(device.port))          # tmodbus default reconnect strategy
+    await lnk.connect()
+    await device.stop()
+    base = lnk._client.transport.base_transport
+
+    async def open_times_out():
+        raise TimeoutError("connect timed out")
+
+    base.open = open_times_out
+    try:
+        with pytest.raises(LinkDown):
+            await lnk.read(1, 3, 0, 1)
+        assert lnk.connected is False
+    finally:
+        await lnk.close()
+
+
 async def test_connect_failure_raises_link_down(device):
     await device.stop()
     lnk = create_link(tcp_args(device.port), reconnect=short_reconnect())

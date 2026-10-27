@@ -59,6 +59,10 @@ class ModbusLink:
     async def close(self) -> None:
         await self._client.disconnect()
 
+    def _transport_open(self) -> bool:
+        transport = self._client.transport
+        return getattr(transport, "base_transport", transport).is_open()
+
     def _unit(self, unit_id: int) -> AsyncModbusClient:
         if unit_id not in self._units:
             self._units[unit_id] = self._client.for_unit_id(unit_id)
@@ -71,6 +75,10 @@ class ModbusLink:
             mapped = classify(e)
             if mapped is None:
                 raise
+            if isinstance(e, TimeoutError) and not self._transport_open():
+                # tmodbus re-raises a connect timeout from auto-reconnect as a bare TimeoutError. A response
+                # timeout leaves the socket/port open (disconnect_on_timeout is off); a failed connect does not.
+                mapped = LinkDown(str(e) or type(e).__name__)
             if isinstance(mapped, LinkDown):
                 self.connected = False
             raise mapped from e
