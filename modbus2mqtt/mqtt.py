@@ -76,9 +76,13 @@ class MqttSide:
                     self._started.add(device)
                 except Exception as exc:
                     log.error("Failed to start MQTT client for device %s: %s", device.name, exc)
-        if self.on_connected:
-            self.on_connected()
         self.initial_connection_made = True
+        if self.on_connected:
+            try:
+                self.on_connected()
+            except Exception:
+                # Never let the hook (e.g. HA discovery) block polling or kill paho's network thread.
+                log.exception("on_connected hook failed")
 
     def _device_on_connect(self, device: Device):
         def on_connect(client, userdata, flags, reason_code, properties) -> None:

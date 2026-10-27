@@ -12,6 +12,7 @@ from tmodbus.exceptions import (
     ModbusConnectionError,
     RequestRetryFailedError,
     ServerDeviceBusyError,
+    ServerDeviceFailureError,
 )
 
 from modbus2mqtt.modbus import DeviceError, LinkDown, classify, create_link
@@ -103,6 +104,42 @@ async def test_reads_not_retried(device, link):
     with pytest.raises(DeviceError):
         await link.read(1, 3, 0, 1)
     assert device.reads == [(1, 3, 0, 1)]
+
+
+@pytest.fixture
+async def fast_link(device):
+    lnk = create_link(tcp_args(device.port, timeout=0.15), reconnect=short_reconnect())
+    await lnk.connect()
+    yield lnk
+    await lnk.close()
+
+
+async def test_read_retries_timeouts(device, fast_link):
+    device.holding[1][0] = 42
+    device.drop_next = 3
+    assert await fast_link.read(1, 3, 0, 1) == [42]
+    assert len(device.reads) == 4
+
+
+async def test_read_gives_up_after_four_timeouts(device, fast_link):
+    device.drop_next = 4
+    with pytest.raises(DeviceError) as exc_info:
+        await fast_link.read(1, 3, 0, 1)
+    assert isinstance(exc_info.value.__cause__, TimeoutError)
+    assert len(device.reads) == 4
+
+
+async def test_read_device_exception_not_retried(device, fast_link):
+    device.fail_with = ServerDeviceFailureError
+    with pytest.raises(DeviceError):
+        await fast_link.read(1, 3, 0, 1)
+    assert len(device.reads) == 1
+
+
+async def test_write_timeouts_keep_write_retry_policy(device, fast_link):
+    device.drop_next = 2
+    assert await fast_link.write(1, 6, 0, 5) == 6   # tenacity write retry, not the read re-send
+    assert len(device.writes) == 3   # two unanswered attempts, then the answered one
 
 
 async def test_device_busy_not_retried_on_reads(device, link):

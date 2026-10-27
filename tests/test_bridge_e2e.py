@@ -281,7 +281,7 @@ async def test_write_publishes_state_immediately(tmp_path, monkeypatch, device):
     # Slow poll, so only the post-write publish (not the next poll) can show the new value in time.
     csv = BASIC_CSV.replace("poller,dev,1,0,12,holding_register,0.05", "poller,dev,1,0,12,holding_register,5")
     async with running_bridge(tmp_path, monkeypatch, csv, device) as broker:
-        await wait_for(lambda: broker.payloads(state("i16")))
+        await wait_for(lambda: broker.payloads(state("i16")), timeout=10)   # first poll lands within rate*U(0,1)
         broker.inject("modbus/dev/set/i16", "-5")
         await wait_for(lambda: broker.last(state("i16")).payload == b"-5", timeout=1.0)
 

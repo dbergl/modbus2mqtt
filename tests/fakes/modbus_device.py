@@ -28,8 +28,9 @@ def _free_port() -> int:
 class _TcpServer(AsyncTcpServer):
     """AsyncTcpServer that can drop its open client connections on stop."""
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, *args, should_drop=lambda: False, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+        self._should_drop = should_drop
         self._writers: set[asyncio.StreamWriter] = set()
 
     async def handle_client(self, reader, writer) -> None:
@@ -38,6 +39,10 @@ class _TcpServer(AsyncTcpServer):
             await super().handle_client(reader, writer)
         finally:
             self._writers.discard(writer)
+
+    async def _send_response(self, writer, *args) -> None:
+        if not self._should_drop():
+            await super()._send_response(writer, *args)
 
     async def stop(self) -> None:
         if self._server is not None:
@@ -60,9 +65,16 @@ class FakeModbusDevice:
         self.fail_with: type[Exception] | None = None
         self.fail_units: set[int] | None = None   # units fail_with applies to; None means all
         self.fail_next = 0   # fail this many upcoming requests (any unit) with ServerDeviceFailureError
+        self.drop_next = 0   # swallow this many upcoming requests (handled, but never answered)
         self.port = _free_port()
         self._server: _TcpServer | None = None
         self._router = self._build_router()
+
+    def _should_drop(self) -> bool:
+        if self.drop_next > 0:
+            self.drop_next -= 1
+            return True
+        return False
 
     def _check(self, unit: int, request) -> None:
         if self.fail_next > 0:
@@ -131,7 +143,7 @@ class FakeModbusDevice:
 
     async def start(self) -> None:
         if self._server is None:
-            self._server = _TcpServer("127.0.0.1", self._router, port=self.port)
+            self._server = _TcpServer("127.0.0.1", self._router, port=self.port, should_drop=self._should_drop)
             await self._server.start()
 
     async def stop(self) -> None:

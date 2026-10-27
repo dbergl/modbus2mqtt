@@ -145,12 +145,16 @@ same MQTT topics and payloads, same Home Assistant entities.
   callbacks (or an equivalent connected flag), so connection errors pause
   polling instead of counting as device failures. This matters beyond HA:
   rvc2mqtt's virtual inverter treats `<base>/connected` as liveness.
-- **Only writes are retried.** tmodbus's `response_retry_strategy` and
-  `retry_on_device_busy` (default on) apply to every request on a client.
-  Today reads never retry. Retrying reads with a 1 s timeout would stall the
-  RTU bus and slow failure counting. So reads get no retry and
-  `retry_on_device_busy=False`, and writes are wrapped in a tenacity strategy
-  roughly matching today's (3 attempts, 0.25 s × 1.5 backoff).
+- **Retries match legacy behaviour.** tmodbus's `response_retry_strategy` and
+  `retry_on_device_busy` (default on) apply to every request on a client, so
+  both are disabled on the client and retries live in `ModbusLink`. pymodbus
+  3.11 clients defaulted to `retries=3`, so legacy reads were re-sent on a
+  response timeout (exception responses were not retried). `ModbusLink.read`
+  therefore re-sends up to 3 times (4 attempts total, no wait) but only after
+  a response `TimeoutError`; device exception responses, invalid responses and
+  `LinkDown` are not retried. Writes are wrapped in a tenacity strategy
+  roughly matching the legacy one (3 attempts, 0.25 s × 1.5 backoff,
+  `DeviceError` only).
 - **The production start command keeps working.** coach2mqtt's
   `docker-compose.yml` overrides the command with
   `python3 -u modbus2mqtt.py --add-to-homeassistant` and relies on the image's

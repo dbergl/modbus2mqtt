@@ -29,7 +29,7 @@
   Log wording may change.
 - coach2mqtt runs `python3 -u modbus2mqtt.py --add-to-homeassistant` with `WORKDIR /app`, `RTU=/dev/ttyUSB0`, `LOG_LEVEL=1`. That command must keep working.
 - Link loss pauses polling and writes. It is never counted as a device failure, and writes stay queued. Only device errors and timeouts count toward `failcounter`.
-- Only writes are retried, with 3 attempts and backoff starting at 0.25 s ×1.5. Reads are never retried, and `retry_on_device_busy=False`.
+- Writes are retried on `DeviceError`, with 3 attempts and backoff starting at 0.25 s ×1.5. Reads are re-sent (up to 3 re-sends, 4 attempts, no wait) only after a response timeout, matching legacy pymodbus `retries=3`; device exception responses, invalid responses and `LinkDown` are never retried. `retry_on_device_busy=False`.
 - No blocking calls inside the event loop (no `time.sleep`).
 - arm64-only image, built natively. `:latest` stays frozen (`latest=false`). Release on the v2 line: `v2.0.0-beta.2` for hardware testing, then `v2.0.0`.
 - The final `modbus2mqtt/` package must have fewer total lines than today's 1,329 (`wc -l modbus2mqtt/*.py`).

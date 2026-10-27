@@ -22,6 +22,7 @@ class LinkDown(Exception):
 
 _LINK_FAILURES = (ModbusConnectionError, OSError)
 _DEVICE_FAILURES = (ModbusResponseError, InvalidResponseError, TimeoutError)
+_READ_ATTEMPTS = 4
 _READS = {1: "read_coils", 2: "read_discrete_inputs", 3: "read_holding_registers", 4: "read_input_registers"}
 
 
@@ -86,7 +87,15 @@ class ModbusLink:
         return result
 
     async def read(self, unit_id: int, fc: int, address: int, count: int) -> list[int] | list[bool]:
-        return await self._call(unit_id, _READS[fc], address, count)
+        # Legacy (pymodbus retries=3) parity: re-send up to 3 times, with no wait, but only after a response
+        # timeout (a lost frame). Device exception responses, invalid responses and LinkDown are not retried.
+        for attempt in range(1, _READ_ATTEMPTS + 1):
+            try:
+                return await self._call(unit_id, _READS[fc], address, count)
+            except DeviceError as e:
+                if attempt == _READ_ATTEMPTS or not isinstance(e.__cause__, TimeoutError):
+                    raise
+        raise AssertionError("unreachable")
 
     async def write(self, unit_id: int, fc: int, address: int, value: int | bool | list[int], *,
                     force_multiple: bool = False) -> int:
