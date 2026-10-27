@@ -4,19 +4,27 @@ FROM python:3.14-slim AS builder
 # pymodbus, pyserial) ships a pure-Python py3-none-any wheel, so nothing is
 # built from source.
 
-COPY requirements.txt .
+COPY --from=ghcr.io/astral-sh/uv:0.9.7 /uv /bin/uv
 
-RUN pip install --user --no-cache-dir -r requirements.txt
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
+
+WORKDIR /src
+COPY pyproject.toml uv.lock README.md ./
+COPY modbus2mqtt/ modbus2mqtt/
+
+RUN uv sync --locked --no-dev --no-editable
 
 FROM python:3.14-slim
 
 RUN adduser worker && usermod -a -G dialout worker && install -o worker -g worker -d /config /logs
 
-COPY --chown=worker:worker --from=builder /root/.local /home/worker/.local
-COPY --chown=worker:worker modbus2mqtt/ /app/
+COPY --from=builder /opt/venv /opt/venv
+COPY --chown=worker:worker docker/modbus2mqtt.py /app/modbus2mqtt.py
 
 VOLUME ["/config","/logs"]
-ENV PATH="/home/worker/.local/bin:${PATH}"
+ENV PATH="/opt/venv/bin:${PATH}"
 
 USER worker
 WORKDIR /app

@@ -1,5 +1,5 @@
 import json
-from dataTypes import DataTypes
+from .dataTypes import DataTypes
 
 
 class HassConnector:

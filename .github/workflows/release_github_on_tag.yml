@@ -23,7 +23,16 @@ env:
 
 jobs:
 
+  test:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked
+      - run: uv run pytest
+
   build:
+    needs: test
     # arm64 runner (free for public repos). The only target platform is
     # linux/arm64, so this builds natively -- no QEMU emulation anywhere in the
     # job, which is where nearly all of the old build time went.
