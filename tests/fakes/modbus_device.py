@@ -5,6 +5,7 @@ import socket
 from collections import defaultdict
 from collections.abc import Iterable
 
+from tmodbus.exceptions import ServerDeviceFailureError
 from tmodbus.pdu import (
     ReadCoilsPDU,
     ReadDiscreteInputsPDU,
@@ -58,11 +59,15 @@ class FakeModbusDevice:
         self.reads: list[tuple[int, int, int, int]] = []
         self.fail_with: type[Exception] | None = None
         self.fail_units: set[int] | None = None   # units fail_with applies to; None means all
+        self.fail_next = 0   # fail this many upcoming requests (any unit) with ServerDeviceFailureError
         self.port = _free_port()
         self._server: _TcpServer | None = None
         self._router = self._build_router()
 
     def _check(self, unit: int, request) -> None:
+        if self.fail_next > 0:
+            self.fail_next -= 1
+            raise ServerDeviceFailureError(request.function_code)
         if self.fail_with is not None and (self.fail_units is None or unit in self.fail_units):
             raise self.fail_with(request.function_code)
 
