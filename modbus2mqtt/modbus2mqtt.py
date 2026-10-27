@@ -471,7 +471,7 @@ async def writehandler(userdata, msg, client):
                     await asyncio.sleep(delay)
                     delay *= 1.5
                 else:
-                    myRef.checkPublish(value) # writing was successful => we can assume, that the corresponding state can be set and published
+                    myRef.checkPublish(values) # writing was successful => we can assume, that the corresponding state can be set and published
                     if verbosity>=3:
                         print(f"Writing {writeType} values to device {str(myDevice.name)}, ID={str(myDevice.device_id)} at Reference={str(myRef.reference)} successful.")
                     return
