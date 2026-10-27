@@ -141,17 +141,14 @@ async def test_garbage_set_payloads_ignored(tmp_path, monkeypatch, device):
 async def test_device_exception_goes_offline_and_recovers(tmp_path, monkeypatch, device):
     async with running_bridge(tmp_path, monkeypatch, BASIC_CSV, device) as broker:
         await wait_online(broker)
-        dev_client = next(c for c in broker.clients if c.will and c.will[0] == "modbus/dev/connected")
-        failed_reads_when_offline = []
-        publish = dev_client.publish
-
-        def spy(topic, payload=None, qos=0, retain=False, properties=None):
-            if topic == "modbus/dev/connected" and payload == "offline":
-                failed_reads_when_offline.append(len(device.reads) - mark)
-            return publish(topic, payload, qos, retain, properties)
-
-        dev_client.publish = spy
         mark = len(device.reads)
+        failed_reads_when_offline = []
+
+        def record(msg):
+            if (msg.topic, msg.payload) == ("modbus/dev/connected", b"offline"):
+                failed_reads_when_offline.append(len(device.reads) - mark)
+
+        broker.on_publish.append(record)
         device.fail_with = IllegalDataAddressError
         await wait_for(lambda: broker.last("modbus/dev/connected").payload == b"offline")
         msg = broker.last("modbus/dev/connected")
@@ -191,6 +188,8 @@ async def test_autoremove_and_reset(tmp_path, monkeypatch):
             assert reads(2) > unit2_before
             device.fail_with = None
             mark = reads(1)
+            await asyncio.sleep(0.3)
+            assert reads(1) == mark, "removed pollers must stay removed until reset-autoremove"
             broker.inject("modbus/reset-autoremove", "1")
             await wait_for(lambda: reads(1) > mark + 3)
     finally:
