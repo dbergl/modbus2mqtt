@@ -45,7 +45,7 @@ import logging
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .addToHomeAssistant import HassConnector
-from .dataTypes import DataTypes
+from .datatypes import parse_data_type
 
 import asyncio
 
@@ -239,7 +239,7 @@ class Poller:
                         print("Read MODBUS, FC:"+str(self.functioncode)+", DataType:"+str(self.dataType)+", ref:"+str(self.reference)+", Qty:"+str(self.size)+", SI:"+str(self.device_id))
                         print("Read MODBUS, DATA:"+str(data))
                     for ref in self.readableReferences:
-                        val = data[ref.relativeReference:(ref.regAmount+ref.relativeReference)]
+                        val = data[ref.relativeReference:(ref.dtype.reg_amount+ref.relativeReference)]
                         ref.checkPublish(val)
                 else:
                     if verbosity>=1:
@@ -296,8 +296,6 @@ class Reference:
         self.reference=int(reference)
         self.lastval=None
         self.scale=None
-        self.regAmount=None
-        self.stringLength=None
         self.json={}
 
         if scaling:
@@ -317,16 +315,13 @@ class Reference:
         self.writefunctioncode=None
         self.device=None
         self.poller=poller
-        if self.poller.functioncode == 1:
-            DataTypes.parseDataType(self,"bool")
-
-        elif self.poller.functioncode == 2:
-            DataTypes.parseDataType(self,"bool")
+        if self.poller.functioncode in (1, 2):
+            self.dtype = parse_data_type("bool")
         else:
-            DataTypes.parseDataType(self,dtype)
+            self.dtype = parse_data_type(dtype)
 
     def checkSanity(self,reference,size):
-        if self.reference in range(reference,size+reference) and self.reference+self.regAmount-1 in range(reference,size+reference):
+        if self.reference in range(reference,size+reference) and self.reference+self.dtype.reg_amount-1 in range(reference,size+reference):
             self.relativeReference=self.reference-reference
             return True
 
@@ -336,7 +331,7 @@ class Reference:
         # Only publish messages after the initial connection has been made. If it became disconnected then the offline buffer will store messages,
         # but only after the intial connection was made.
         if mqc.initial_connection_made == True:
-            val = self.combine(self,val)
+            val = self.dtype.combine(val, self)
             if self.lastval != val or args.always_publish:
                 self.lastval = val
                 if self.scale:
@@ -434,7 +429,7 @@ async def writehandler(userdata, msg, client):
             (r for r in referenceList
              if r.device is myDevice and r.topic == parent_topic),
             None)
-        if parent_ref is None or parent_ref.combine != DataTypes.combinePackedTime:
+        if parent_ref is None or parent_ref.dtype.name != "packedtime":
             return
         _handle_tz_set(parent_ref, str(msg.payload.decode("utf-8")))
         return
@@ -450,9 +445,10 @@ async def writehandler(userdata, msg, client):
     delay = 0.25
     result = None
     writeType = None
-    value = myRef.parse(myRef,str(payload))
+    value = myRef.dtype.parse(str(payload), myRef)
 
     if value is not None:
+        values = value if isinstance(value, list) else [value]
         for n in range(tries):
             try:
                 match myRef.writefunctioncode:
@@ -460,17 +456,12 @@ async def writehandler(userdata, msg, client):
                         writeType = "coils"
                         result = await client.write_coil(int(myRef.reference),value,device_id=int(myRef.device.device_id))
                     case 6:
-                        try:
-                            valLen=len(value)
-                        except Exception:
-                            valLen=1
-                        if valLen>1 or args.avoid_fc6:
+                        if len(values)>1 or args.avoid_fc6:
                             writeType = "registers"
-                            values = value if valLen>1 else [value]
                             result = await client.write_registers(int(myRef.reference),values,device_id=int(myRef.device.device_id))
                         else:
                             writeType = "register"
-                            result = await client.write_register(int(myRef.reference),value,device_id=int(myRef.device.device_id))
+                            result = await client.write_register(int(myRef.reference),values[0],device_id=int(myRef.device.device_id))
 
                 if result.isError():
                     if verbosity>=1:

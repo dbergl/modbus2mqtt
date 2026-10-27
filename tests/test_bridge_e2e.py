@@ -266,3 +266,11 @@ async def test_timezone_set_via_mqtt(tmp_path, monkeypatch, device):
         broker.inject("modbus/dev/set/clock/timezone", "Not/AZone")
         await wait_for(lambda: len(broker.payloads(tz_topic)) == 2)
         assert broker.last(tz_topic).payload == b"Europe/Berlin"
+
+
+async def test_scaled_float_publishes(tmp_path, monkeypatch, device):
+    csv = BASIC_CSV.replace("reference,f32,2,r,float32BE,,", "reference,f32,2,r,float32BE,2,")
+    device.holding[1][2], device.holding[1][3] = 0x0000, 0x3FC0          # 1.5 as float32BE
+    async with running_bridge(tmp_path, monkeypatch, csv, device) as broker:
+        await wait_for(lambda: broker.last(state("f32")) is not None)
+        assert broker.last(state("f32")).payload == b"3.0"

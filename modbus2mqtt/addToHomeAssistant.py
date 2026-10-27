@@ -1,5 +1,4 @@
 import json
-from .dataTypes import DataTypes
 
 
 class HassConnector:
@@ -61,7 +60,7 @@ class HassConnector:
             # the packedtime data type, regardless of whether a timezone
             # is currently configured — this lets the user *set* one
             # from a fresh state.
-            if ref.combine == DataTypes.combinePackedTime and platform == 'datetime':
+            if ref.dtype.name == "packedtime" and platform == 'datetime':
                 tz_component = self._buildTzCompanion(ref)
                 cmps[f'{ref.topic.replace("/", "_")}_timezone'] = tz_component
                 # Seed the companion state so HA renders the current value.
@@ -96,7 +95,7 @@ class HassConnector:
 
         # Check the reference's actual combine function, not the poller's default
         # dataType. This correctly handles bool-typed holding registers as well as coils.
-        is_bool = (ref.combine == DataTypes.combinebool)
+        is_bool = (ref.dtype.name == "bool")
         is_writable = 'w' in ref.rw
 
         if is_bool:

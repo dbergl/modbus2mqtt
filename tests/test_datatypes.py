@@ -86,6 +86,10 @@ def test_combine_float32():
     assert str(parse_data_type("float32LE").combine([0x3F8C, 0x6666], Ref)) == "1.0968749523162842"
 
 
+def test_float_combine_returns_float():
+    assert isinstance(parse_data_type("float32BE").combine([0, 0x3FC0], Ref), float)
+
+
 def test_packedtime_combine_with_timezone():
     assert parse_data_type("packedtime").combine(PT_REGS, LA) == "2026-10-27T13:45:09"
 
